@@ -11,9 +11,10 @@
 #include <stdbool.h> /* for bool */
 #include <stddef.h> /* for size_t */
 #include <stdlib.h> /* for qsort(), NULL */
-#include <string.h> /* for strncmp() */
+#include <string.h> /* for memcpy(), strcpy(), strlen() */
 
 #include "commandt.h" /* for haystack_t, matcher_t, scanner_t */
+#include "compare.h" /* for commandt_cmp_alpha(), commandt_cmp_score() */
 #include "die.h" /* for die() */
 #include "heap.h" /* for HEAP_PEEK(), heap_extract(), heap_free(), heap_insert(), heap_new() */
 #include "score.h" /* for commandt_score() */
@@ -37,7 +38,6 @@ typedef struct {
 
 // Forward declarations.
 static long calculate_bitmask(const char *str, unsigned long length);
-static int cmp_alpha(const void *a, const void *b);
 static int cmp_alpha_p(const void *a, const void *b);
 static int cmp_score_p(const void *a, const void *b);
 static void *get_matches(void *worker_args);
@@ -265,48 +265,12 @@ static long calculate_bitmask(const char *str, unsigned long length) {
 }
 
 /**
- * Comparison function for use with `heap_new()`.
- */
-static int cmp_alpha(const void *a, const void *b) {
-    str_t *a_str = ((haystack_t *)a)->candidate;
-    str_t *b_str = ((haystack_t *)b)->candidate;
-    const char *a_ptr = a_str->contents;
-    const char *b_ptr = b_str->contents;
-    size_t a_len = a_str->length;
-    size_t b_len = b_str->length;
-    int order = strncmp(a_ptr, b_ptr, b_len);
-    if (order == 0) {
-        return (long)a_len - (long)b_len; // Shorter string wins.
-    } else {
-        return order;
-    }
-}
-
-/**
- * Orders two `haystack_t` by score, descending, breaking ties alphabetically.
- *
- * Called directly by `heap.c` (the heap's hard-coded comparator) and, via
- * `cmp_score_p()`, by the final `qsort()`.
- */
-int commandt_cmp_score(const void *a, const void *b) {
-    float a_score = ((haystack_t *)a)->score;
-    float b_score = ((haystack_t *)b)->score;
-    if (a_score > b_score) {
-        return -1; // `a` should appear before `b`.
-    } else if (a_score < b_score) {
-        return 1; // `b` should appear before `a`.
-    } else {
-        return cmp_alpha(a, b);
-    }
-}
-
-/**
  * Comparison function for use with `qsort()`.
  */
 static int cmp_alpha_p(const void *a, const void *b) {
     haystack_t *a_haystack = *((haystack_t **)a);
     haystack_t *b_haystack = *((haystack_t **)b);
-    return cmp_alpha(a_haystack, b_haystack);
+    return commandt_cmp_alpha(a_haystack, b_haystack);
 }
 
 /**

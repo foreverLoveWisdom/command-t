@@ -7,7 +7,7 @@
 
 #include <stdlib.h> /* for free(), NULL */
 
-#include "matcher.h" /* for commandt_cmp_score() */
+#include "compare.h" /* for commandt_cmp_score() */
 #include "xmalloc.h" /* for xmalloc() */
 
 #define HEAP_PARENT(index) ((index - 1) / 2)

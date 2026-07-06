@@ -54,17 +54,6 @@ result_t *commandt_matcher_run(matcher_t *matcher, const char *needle);
 
 void commandt_result_free(result_t *results);
 
-/**
- * Orders two `haystack_t` (each passed as a `const void *`) by score,
- * descending, breaking ties alphabetically.
- *
- * Exposed here (rather than kept `static` in matcher.c) so that `heap.c` can
- * call it directly. The heap is only ever ordered by score, so hard-coding the
- * comparator lets the compiler emit a direct call instead of dispatching
- * through a per-heap function pointer.
- */
-int commandt_cmp_score(const void *a, const void *b);
-
 // TODO: figure out whether I can safely drop the `commandt_` prefixes to these
 // functions... (or whether we should be _adding_ more prefixes to other places
 // that don't currently have them).
