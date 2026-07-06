@@ -39,7 +39,6 @@ typedef struct {
 static long calculate_bitmask(const char *str, unsigned long length);
 static int cmp_alpha(const void *a, const void *b);
 static int cmp_alpha_p(const void *a, const void *b);
-static int cmp_score(const void *a, const void *b);
 static int cmp_score_p(const void *a, const void *b);
 static void *get_matches(void *worker_args);
 
@@ -284,9 +283,12 @@ static int cmp_alpha(const void *a, const void *b) {
 }
 
 /**
- * Comparison function for use with `heap_new()`.
+ * Orders two `haystack_t` by score, descending, breaking ties alphabetically.
+ *
+ * Called directly by `heap.c` (the heap's hard-coded comparator) and, via
+ * `cmp_score_p()`, by the final `qsort()`.
  */
-static int cmp_score(const void *a, const void *b) {
+int commandt_cmp_score(const void *a, const void *b) {
     float a_score = ((haystack_t *)a)->score;
     float b_score = ((haystack_t *)b)->score;
     if (a_score > b_score) {
@@ -313,7 +315,7 @@ static int cmp_alpha_p(const void *a, const void *b) {
 static int cmp_score_p(const void *a, const void *b) {
     haystack_t *a_haystack = *((haystack_t **)a);
     haystack_t *b_haystack = *((haystack_t **)b);
-    return cmp_score(a_haystack, b_haystack);
+    return commandt_cmp_score(a_haystack, b_haystack);
 }
 
 static void *get_matches(void *worker_args) {
@@ -332,7 +334,7 @@ static void *get_matches(void *worker_args) {
     // Reserve one extra slot so that we can do an insert-then-extract even
     // when "full" (effectively allows use of min-heap to maintain a
     // top-"limit" list of items).
-    heap_t *heap = heap_new(matcher->limit + 1, cmp_score);
+    heap_t *heap = heap_new(matcher->limit + 1);
 
     // Each worker will process a chunk of 64 consecutive needles at a time in
     // order maximize benefit of the CPU cache.
