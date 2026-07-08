@@ -6,16 +6,13 @@
 /**
  * @file
  *
- * A fixed size min-heap.
- *
- * Note: entries are always ordered with `commandt_cmp_score()`. The heap used
- * to take a comparator function pointer, but it is only ever used to keep the
- * top-scoring haystacks, so the comparator is hard-coded, which lets the
- * compiler emit a direct call instead of an indirect one.
+ * A fixed size min-heap, specialized for Command-T.
  */
 
 #ifndef HEAP_H
 #define HEAP_H
+
+#include "commandt.h" /* for haystack_t */
 
 // Define short names for convenience, but all external symbols need prefixes.
 #define heap_extract commandt_heap_extract
@@ -26,7 +23,7 @@
 typedef struct {
     unsigned count;
     unsigned capacity;
-    void **entries;
+    haystack_t **entries;
 } heap_t;
 
 #define HEAP_PEEK(heap) (heap->entries[0])
@@ -34,7 +31,7 @@ typedef struct {
 /**
  * Extracts the minimum value from `heap`.
  */
-void *heap_extract(heap_t *heap);
+haystack_t *heap_extract(heap_t *heap);
 
 /**
  * Frees a previously created heap.
@@ -44,7 +41,7 @@ void heap_free(heap_t *heap);
 /**
  * Inserts `value` into `heap`.
  */
-void heap_insert(heap_t *heap, void *value);
+void heap_insert(heap_t *heap, haystack_t *value);
 
 /**
  * Returns a new heap.

@@ -25,7 +25,7 @@ heap_t *heap_new(unsigned capacity) {
 
     heap->capacity = capacity;
     heap->count = 0;
-    heap->entries = xmalloc(capacity * sizeof(void *));
+    heap->entries = xmalloc(capacity * sizeof(haystack_t *));
 
     return heap;
 }
@@ -35,8 +35,8 @@ void heap_free(heap_t *heap) {
     free(heap);
 }
 
-void *heap_extract(heap_t *heap) {
-    void *extracted = NULL;
+haystack_t *heap_extract(heap_t *heap) {
+    haystack_t *extracted = NULL;
     if (heap->count) {
         // Grab root value.
         extracted = heap->entries[0];
@@ -51,7 +51,7 @@ void *heap_extract(heap_t *heap) {
     return extracted;
 }
 
-void heap_insert(heap_t *heap, void *value) {
+void heap_insert(heap_t *heap, haystack_t *value) {
     unsigned idx, parent_idx;
 
     // If at capacity, ignore.
@@ -76,13 +76,11 @@ void heap_insert(heap_t *heap, void *value) {
 /**
  * Compare values at indices `a_idx` and `b_idx`.
  *
- * The comparator is hard-coded to `commandt_cmp_score()` (rather than dispatched
- * through a function pointer) because that is the only ordering this heap is
- * ever used with; calling it directly lets the compiler avoid an indirect call.
+ * Hard-coded to use (inlined) `commandt_cmp_score()` for speed.
  */
 static int heap_compare(heap_t *heap, unsigned a_idx, unsigned b_idx) {
-    const void *a = heap->entries[a_idx];
-    const void *b = heap->entries[b_idx];
+    const haystack_t *a = heap->entries[a_idx];
+    const haystack_t *b = heap->entries[b_idx];
     return commandt_cmp_score(a, b);
 }
 
@@ -115,7 +113,7 @@ static int heap_property(heap_t *heap, unsigned parent_idx, unsigned child_idx) 
  * Swaps the values at indexes `a` and `b` within `heap`.
  */
 static void heap_swap(heap_t *heap, unsigned a, unsigned b) {
-    void *tmp = heap->entries[a];
+    haystack_t *tmp = heap->entries[a];
     heap->entries[a] = heap->entries[b];
     heap->entries[b] = tmp;
 }

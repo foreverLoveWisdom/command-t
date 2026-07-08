@@ -333,7 +333,7 @@ static void *get_matches(void *worker_args) {
                     // `max_score_per_char` to the score, so `needle_length *
                     // max_score_per_char` is an upper bound on any score this
                     // candidate could achieve.
-                    float threshold = ((haystack_t *)HEAP_PEEK(heap))->score;
+                    float threshold = HEAP_PEEK(heap)->score;
                     float max_score_per_char =
                         (1.0f / candidate_length + 1.0f / needle_length) / 2.0f;
                     float upper_bound = needle_length * max_score_per_char;
@@ -354,7 +354,7 @@ static void *get_matches(void *worker_args) {
             }
 
             if (heap->count == matcher->limit) {
-                float score = ((haystack_t *)HEAP_PEEK(heap))->score;
+                float score = HEAP_PEEK(heap)->score;
                 if (haystack->score >= score) {
                     heap_insert(heap, haystack);
                     (void)heap_extract(heap);
