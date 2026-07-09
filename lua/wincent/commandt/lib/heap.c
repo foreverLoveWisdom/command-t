@@ -35,20 +35,10 @@ void heap_free(heap_t *heap) {
     free(heap);
 }
 
-haystack_t *heap_extract(heap_t *heap) {
-    haystack_t *extracted = NULL;
-    if (heap->count) {
-        // Grab root value.
-        extracted = heap->entries[0];
-
-        // Move last item to root.
-        heap->entries[0] = heap->entries[heap->count - 1];
-        heap->count--;
-
-        // Restore heap property.
-        heap_heapify(heap, 0);
-    }
-    return extracted;
+void heap_replace_top(heap_t *heap, haystack_t *value) {
+    // Overwrite the root (current worst) and sift it down into place.
+    heap->entries[0] = value;
+    heap_heapify(heap, 0);
 }
 
 void heap_insert(heap_t *heap, haystack_t *value) {

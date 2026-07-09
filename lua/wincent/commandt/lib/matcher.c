@@ -16,7 +16,7 @@
 #include "commandt.h" /* for haystack_t, matcher_t, scanner_t */
 #include "compare.h" /* for commandt_cmp_alpha(), commandt_cmp_score() */
 #include "die.h" /* for die() */
-#include "heap.h" /* for HEAP_PEEK(), heap_extract(), heap_free(), heap_insert(), heap_new() */
+#include "heap.h" /* for HEAP_PEEK(), heap_free(), heap_insert(), heap_new(), heap_replace_top() */
 #include "score.h" /* for commandt_score() */
 #include "str.h" /* for str_t */
 #include "xmalloc.h" /* for xmalloc() */
@@ -354,10 +354,10 @@ static void *get_matches(void *worker_args) {
             }
 
             if (heap->count == matcher->limit) {
-                float score = HEAP_PEEK(heap)->score;
-                if (haystack->score >= score) {
-                    heap_insert(heap, haystack);
-                    (void)heap_extract(heap);
+                // Full heap: replace the worst entry (root) in place if this
+                // candidate beats it, avoiding an insert-then-extract.
+                if (commandt_cmp_score(haystack, HEAP_PEEK(heap)) < 0) {
+                    heap_replace_top(heap, haystack);
                 }
             } else {
                 heap_insert(heap, haystack);
