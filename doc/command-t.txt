@@ -555,7 +555,7 @@ truncated. Possible values are:
 - `'middle'`: entries are truncated in the middle (ie. "foo...qux").
 - `'end'`: entries are truncated at the end (ie. "foobarbaz").
 - `true`: same as `'middle'`.
-- `false`: same as `'end'`).
+- `false`: same as `'end'.
 
 Note that when set to `'end'` (or `false`), no ellipsis is shown.
 
