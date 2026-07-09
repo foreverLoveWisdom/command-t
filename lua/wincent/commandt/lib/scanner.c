@@ -25,6 +25,10 @@
 // managing its lifecycle.
 #define UNOWNED (-1)
 
+// Drain up to a full pipe buffer in a single read();
+// 64KB is the default on macOS and Linux.
+#define READ_CHUNK (64 * 1024)
+
 static long MAX_FILES = MAX_FILES_CONF;
 static size_t buffer_size = MMAP_SLAB_SIZE_CONF;
 
@@ -86,7 +90,7 @@ bail_child:
     char *start = scanner->buffer;
     char *end = scanner->buffer;
     ssize_t read_count;
-    while ((read_count = read(stdout_pipe[0], end, 4096)) != 0) {
+    while ((read_count = read(stdout_pipe[0], end, READ_CHUNK)) != 0) {
         if (read_count < 0) {
             // A read error, but we may as well try and proceed gracefully.
             break;
