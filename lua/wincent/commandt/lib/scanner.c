@@ -89,8 +89,17 @@ bail_child:
     }
     char *start = scanner->buffer;
     char *end = scanner->buffer;
+    char *buffer_end = scanner->buffer + buffer_size;
     ssize_t read_count;
-    while ((read_count = read(stdout_pipe[0], end, READ_CHUNK)) != 0) {
+    while (end < buffer_end) {
+        size_t want = (size_t)(buffer_end - end);
+        if (want > READ_CHUNK) {
+            want = READ_CHUNK;
+        }
+        read_count = read(stdout_pipe[0], end, want);
+        if (read_count == 0) {
+            break; // EOF: the child closed its end of the pipe.
+        }
         if (read_count < 0) {
             // A read error, but we may as well try and proceed gracefully.
             break;
@@ -118,6 +127,14 @@ bail_child:
                 goto bail_parent;
             }
         }
+    }
+
+    if (end == buffer_end) {
+        // The slab filled up before the child finished (extremely unlikely
+        // given that slab is huge mmap()-ed region). Stop it now so it
+        // doesn't block writing to a pipe we will never drain, which would
+        // otherwise hang the wait() below.
+        kill(child_pid, SIGKILL);
     }
 
 bail_parent:
