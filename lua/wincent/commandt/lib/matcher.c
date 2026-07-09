@@ -175,8 +175,8 @@ result_t *commandt_matcher_run(matcher_t *matcher, const char *needle) {
     // Get unsorted matches.
 
     haystack_t **matches = xmalloc(worker_count * limit * sizeof(haystack_t *));
-    pthread_t *threads = xmalloc(worker_count * sizeof(pthread_t));
-    worker_args_t *worker_args = xmalloc(worker_count * sizeof(worker_args_t));
+    pthread_t threads[MAX_THREADS];
+    worker_args_t worker_args[MAX_THREADS];
 
     for (unsigned i = 0; i < worker_count; i++) {
         worker_args[i].worker_count = worker_count;
@@ -214,9 +214,6 @@ result_t *commandt_matcher_run(matcher_t *matcher, const char *needle) {
         );
         heap_free(heap);
     }
-
-    free(threads);
-    free(worker_args);
 
     unsigned count = atomic_load(&matches_count);
     if (needle_length == 0 || (needle_length == 1 && matcher->needle[0] == '.')) {
