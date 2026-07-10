@@ -10,7 +10,7 @@ local c = require('wincent.commandt.private.lib.c')
 -- `commandt_scanner_stop()` (which `commandt_scanner_free()` also does) to join
 -- the producer and reap the child.
 local function scanner_new_exec_async(command, drop, max_files)
-  local scanner = c.commandt_scanner_new_command_async(command, drop or 0, max_files or 0)
+  local scanner = c.commandt_scanner_new_exec_async(command, drop or 0, max_files or 0)
   ffi.gc(scanner, c.commandt_scanner_free)
   return scanner
 end

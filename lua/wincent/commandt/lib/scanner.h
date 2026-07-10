@@ -15,12 +15,8 @@
 #define scanner_new commandt_scanner_new
 #define scanner_dump commandt_scanner_dump
 #define scanner_free commandt_scanner_free
-
-// This one is special: ideally, the underlying symbol would be
-// `commandt_scanner_new_exec()`, but I don't want to break userspace (see the
-// note in lib.lua), so it keeps its old name.
-#define scanner_new_exec commandt_scanner_new_command
-#define scanner_new_exec_async commandt_scanner_new_command_async
+#define scanner_new_exec commandt_scanner_new_exec
+#define scanner_new_exec_async commandt_scanner_new_exec_async
 #define scanner_stop commandt_scanner_stop
 #define scanner_done commandt_scanner_done
 

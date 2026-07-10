@@ -104,8 +104,13 @@ ffi.cdef([[
   // Scanner functions.
 
   scanner_t *commandt_file_scanner(const char *directory, unsigned max_files);
+  scanner_t *commandt_scanner_new_exec(const char *command, unsigned drop, unsigned max_files);
+  scanner_t *commandt_scanner_new_exec_async(const char *command, unsigned drop, unsigned max_files);
+
+  // Backwards compatiblity shim (for users who `git pull` new Lua but haven't
+  // run `make` yet).
   scanner_t *commandt_scanner_new_command(const char *command, unsigned drop, unsigned max_files);
-  scanner_t *commandt_scanner_new_command_async(const char *command, unsigned drop, unsigned max_files);
+
   scanner_t *commandt_scanner_new_copy(const char **candidates, unsigned count);
   scanner_t *commandt_scanner_new_str(str_t *candidates, unsigned count);
   void commandt_scanner_stop(scanner_t *scanner);

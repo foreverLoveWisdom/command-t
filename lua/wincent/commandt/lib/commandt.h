@@ -33,7 +33,7 @@ typedef enum {
 
     /**
      * Candidates are produced asynchronously by a background thread reading from
-     * a child process's stdout (see `commandt_scanner_new_command_async()`).
+     * a child process's stdout (see `commandt_scanner_new_exec_async()`).
      */
     SCANNER_EXEC,
 } scanner_kind_t;
