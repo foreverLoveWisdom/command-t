@@ -911,9 +911,13 @@ POSSIBILITY OF SUCH DAMAGE.
 
 HISTORY                                                     *command-t-history*
 
-main (not yet released) ~
+8.2 (13 July 2026) ~
 
 - fix: show relative paths when falling back to the built-in file scanner.
+- perf: apply several matcher optimizations, delivering about 63% reduction in
+  CPU time and a 21% reduction in wall clock time.
+- feat: `exec`-based scanners now stream in candidates asynchronously, make
+  the match listing UI immediately responsive on open even in massive repos.
 
 8.1 (19 March 2026) ~
 
