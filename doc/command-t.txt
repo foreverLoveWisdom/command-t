@@ -911,6 +911,10 @@ POSSIBILITY OF SUCH DAMAGE.
 
 HISTORY                                                     *command-t-history*
 
+main (not yet released) ~
+
+- ...
+
 8.2 (13 July 2026) ~
 
 - fix: show relative paths when falling back to the built-in file scanner.
