@@ -185,6 +185,18 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
             }
         }
         haystack->bitmask = mask;
+
+        // Cache the leftmost forbidden dot (a "." at index 0 or after a "/").
+        // Like the bitmask, it is a property of the candidate alone, so this
+        // once-per-candidate scan spares every subsequent search an O(len) pass.
+        ssize_t first_dot = -1;
+        for (size_t k = 0; k < haystack_len; k++) {
+            if (haystack_p[k] == '.' && (k == 0 || haystack_p[k - 1] == '/')) {
+                first_dot = (ssize_t)k;
+                break;
+            }
+        }
+        haystack->first_dot = first_dot;
     }
     if (!found_needle) {
         return 0.0f;
@@ -204,10 +216,19 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
     // - default: a forbidden dot must be matched *explicitly* by a "." in the
     //   needle (ie. no match may "skip over" it). This is enforced in the DP by
     //   forbidding transitions whose skipped span contains a forbidden dot.
-    bool dot_gate = !always_show_dot_files;
+    //
+    // The cached `first_dot` makes the common case (no hidden component in the
+    // matchable range) O(1): only when a forbidden dot actually falls in
+    // `[0, limit)` do we pay to build the prefix sums used by the enforcement
+    // path below.
+    bool enforce_dots = false;
     size_t forbidden_prefix[limit + 1];
-    size_t forbidden_total = 0;
-    if (dot_gate) {
+    if (!always_show_dot_files && haystack->first_dot >= 0 &&
+        (size_t)haystack->first_dot < limit) {
+        if (never_show_dot_files) {
+            return 0.0f;
+        }
+        size_t forbidden_total = 0;
         forbidden_prefix[0] = 0;
         for (size_t k = 0; k < limit; k++) {
             if (haystack_p[k] == '.' && (k == 0 || haystack_p[k - 1] == '/')) {
@@ -215,13 +236,8 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
             }
             forbidden_prefix[k + 1] = forbidden_total;
         }
-        if (never_show_dot_files && forbidden_total > 0) {
-            return 0.0f;
-        }
+        enforce_dots = true;
     }
-    // Only take the (slower) dot-aware transition path when there is actually a
-    // forbidden dot to avoid skipping over; otherwise the constraint is vacuous.
-    bool enforce_dots = dot_gate && !never_show_dot_files && forbidden_total > 0;
 
     // Forward dynamic program. `D[i][j]` is the best score for matching
     // `needle[0..i]` with `needle[i]` anchored at haystack position `j`. We keep

@@ -16,6 +16,7 @@ ffi.cdef([[
       str_t *candidate;
       long bitmask;
       float score;
+      ssize_t first_dot;
   } haystack_t;
 
   typedef struct {

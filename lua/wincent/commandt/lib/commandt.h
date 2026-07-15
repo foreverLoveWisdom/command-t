@@ -19,6 +19,14 @@ typedef struct {
     str_t *candidate;
     long bitmask;
     float score;
+
+    /**
+     * Index of the leftmost "forbidden" dot (a "." beginning a hidden path
+     * component: at index 0 or immediately after a "/"), or -1 if there is none.
+     * Like `bitmask`, this is a property of the candidate alone, so it is
+     * computed once (alongside the bitmask) and cached for reuse across searches.
+     */
+    ssize_t first_dot;
 } haystack_t;
 
 /**
