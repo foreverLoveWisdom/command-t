@@ -44,4 +44,11 @@ _Static_assert(sizeof(float) == 4, "UNSET_SCORE/memset init assumes 4-byte float
 
 float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case);
 
+/**
+ * An admissible upper bound on the score that any candidate of length
+ * `candidate_length` could achieve for a needle of length `needle_length`. Used
+ * by the matcher to skip candidates that cannot possibly enter the results heap.
+ */
+float commandt_score_upper_bound(size_t needle_length, size_t candidate_length);
+
 #endif

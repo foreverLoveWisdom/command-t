@@ -7,247 +7,304 @@
 
 #include <stddef.h> /* for size_t */
 #ifdef DEBUG_SCORING
-#include <stdio.h> /* for fprintf, stdout, snprintf */
+#include <stdio.h> /* for fprintf, stdout */
 #endif
 #include <stdlib.h> /* for NULL */
-#include <string.h> /* for memset() */
 
-// Use a struct to make passing params during recursion easier.
-typedef struct {
-    haystack_t *haystack;
-    const char *haystack_p;
-    const char *needle_p;
-    size_t needle_length;
-    size_t *rightmost_match_p; // Rightmost match for each char in needle.
-    float max_score_per_char;
-    bool always_show_dot_files;
-    bool never_show_dot_files;
-    bool ignore_case;
-    float *memo; // Memoization.
-} matchinfo_t;
+// Scoring tunables.
+//
+// The per-character "factor ladder" (see `factor_for()`) is inherited verbatim
+// from the historical scorer, so all of the boundary-preference behaviour ("/"
+// beats "_" beats "." etc.) is unchanged. On top of it, a character that matches
+// immediately after the previous match (a "consecutive" character, ie. part of a
+// contiguous run) is worth `BONUS_CONSECUTIVE`. Because that exceeds every
+// boundary bonus, a contiguous substring match dominates a scattered one (eg.
+// "com" prefers "command/x" over "c/o/m/x", and "ab" prefers a consecutive "ab"
+// over a split match), which also biases matches towards whole filename
+// components without needing a separate basename term.
+//
+// The bonus is a constant (rather than growing with run length) on purpose: it
+// keeps the score of a match a function of the matched positions alone, with no
+// dependence on the order in which characters were placed. That is what lets the
+// dynamic program below find the true maximum with a single value per cell.
+#define BONUS_CAMEL 0.8f // camelCase hump.
+#define BONUS_SLASH 0.9f // Character follows a "/".
+#define BONUS_WORD 0.8f // Character follows "-", "_", " ", or a digit.
+#define BONUS_DOT 0.7f // Character follows ".".
+#define BONUS_CONSECUTIVE \
+    1.3f // Character immediately follows the previous match.
 
-// TODO: see if can come up with a better name than matchinfo_t
+static inline char downcase(char c) {
+    return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c;
+}
 
-static float recursive_match(
-    matchinfo_t *m, // Sharable meta-data.
-    size_t haystack_idx, // Where in the path string to start.
-    size_t needle_idx, // Where in the needle string to start.
-    size_t last_idx, // Location of last matched character.
-    float score // Cumulative score so far.
-) {
-    float *memoized = NULL;
-    float seen_score = 0.0f;
-    const char *haystack_contents = m->haystack_p;
-
-    // Iterate over needle.
-    for (size_t i = needle_idx; i < m->needle_length; i++) {
-        char needle_char = m->needle_p[i];
-
-        // Iterate over (valid range of) haystack.
-        for (size_t j = haystack_idx; j <= m->rightmost_match_p[i]; j++) {
-            char c = needle_char;
-            char d = haystack_contents[j];
-            char d_lower = d >= 'A' && d <= 'Z' ? d | 0x20 : d;
-            if (d == '.') {
-                if (j == 0 ||
-                    haystack_contents[j - 1] == '/') { // This is a dot-file.
-                    int dot_search = c == '.'; // Searching for a dot.
-                    if (m->never_show_dot_files ||
-                        (!dot_search && !m->always_show_dot_files)) {
-                        memoized = &m->memo[j * m->needle_length + i];
-                        if (*memoized == UNSET_SCORE) {
-                            *memoized = 0.0f;
-                        }
-                        return 0.0f;
-                    }
-                }
-            }
-
-            char match_char = m->ignore_case ? d_lower : d;
-            if (c == match_char) {
-                memoized = &m->memo[j * m->needle_length + i];
-                if (*memoized != UNSET_SCORE) {
-                    return *memoized > seen_score ? *memoized : seen_score;
-                }
-
-                // Calculate score.
-                float score_for_char = m->max_score_per_char;
-                size_t distance = j - last_idx;
-
-                if (distance > 1) {
-                    float factor = 1.0f;
-                    char last = haystack_contents[j - 1];
-
-                    // Ordered with most common branches first.
-                    if (last >= 'a' && last <= 'z') {
-                        if (d >= 'A' && d <= 'Z') {
-                            factor = 0.8f; // camelCase boundary.
-                        } else {
-                            factor = (1.0f / distance) * 0.75f;
-                        }
-                    } else if (last == '/') {
-                        factor = 0.9f;
-                    } else if (
-                        last == '-' || last == '_' || last == ' ' ||
-                        (last >= '0' && last <= '9')
-                    ) {
-                        factor = 0.8f;
-                    } else if (last == '.') {
-                        factor = 0.7f;
-                    } else {
-                        // No "special" char behind this one, so factor
-                        // diminishes as distance from last matched char
-                        // increases.
-                        factor = (1.0f / distance) * 0.75f;
-                    }
-                    score_for_char *= factor;
-                }
-
-                if (j < m->rightmost_match_p[i]) {
-                    float sub_score =
-                        recursive_match(m, j + 1, i, last_idx, score);
-                    if (sub_score > seen_score) {
-                        seen_score = sub_score;
-                    }
-                }
-                last_idx = j;
-                haystack_idx = last_idx + 1;
-                score += score_for_char;
-                *memoized = seen_score > score ? seen_score : score;
-                if (i == m->needle_length - 1) {
-                    // Whole string matched.
-                    return *memoized;
-                }
-            }
-        }
+// The historical per-character factor: how much a match at `haystack_idx` is
+// worth relative to `max_score_per_char`, given that the previous matched
+// character was at `last_idx`. A distance of 0 or 1 (ie. the very first
+// character, or a character immediately following the previous match) is worth
+// the full amount; otherwise the factor depends on the character preceding the
+// match (a boundary) or decays with the size of the gap.
+static inline float factor_for(const char *haystack, size_t j, size_t last_idx) {
+    size_t distance = j - last_idx;
+    if (distance <= 1) {
+        return 1.0f;
     }
-    return *memoized = score;
+    char last = haystack[j - 1];
+    char d = haystack[j];
+
+    // Ordered with most common branches first.
+    if (last >= 'a' && last <= 'z') {
+        if (d >= 'A' && d <= 'Z') {
+            return BONUS_CAMEL;
+        }
+        return (1.0f / distance) * 0.75f;
+    } else if (last == '/') {
+        return BONUS_SLASH;
+    } else if (last == '-' || last == '_' || last == ' ' || (last >= '0' && last <= '9')) {
+        return BONUS_WORD;
+    } else if (last == '.') {
+        return BONUS_DOT;
+    }
+    // No "special" char behind this one, so the factor diminishes as the gap
+    // grows.
+    return (1.0f / distance) * 0.75f;
+}
+
+float commandt_score_upper_bound(size_t needle_length, size_t candidate_length) {
+    if (needle_length == 0 || candidate_length == 0) {
+        return 1.0f;
+    }
+    float base = (1.0f / candidate_length + 1.0f / needle_length) / 2.0f;
+
+    // Best case: every needle character forms a single contiguous run. The first
+    // character is worth at most 1.0; each subsequent one at most
+    // `BONUS_CONSECUTIVE` (which exceeds every boundary bonus). This is an
+    // admissible upper bound: no alignment can score higher, so it is safe to
+    // use for pruning.
+    return base * (1.0f + BONUS_CONSECUTIVE * (float)(needle_length - 1));
 }
 
 float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case) {
-    matchinfo_t m;
+    const char *haystack_p = haystack->candidate->contents;
+    size_t haystack_len = haystack->candidate->length;
+    const char *needle_p = matcher->needle;
+    size_t needle_length = matcher->needle_length;
+    bool always_show_dot_files = matcher->always_show_dot_files;
+    bool never_show_dot_files = matcher->never_show_dot_files;
     bool compute_bitmasks = haystack->bitmask == UNSET_BITMASK;
-    m.haystack = haystack;
-    m.haystack_p = m.haystack->candidate->contents;
-    m.needle_p = matcher->needle;
-    m.needle_length = matcher->needle_length;
-    m.rightmost_match_p = NULL;
-    m.max_score_per_char =
-        (1.0f / m.haystack->candidate->length + 1.0f / m.needle_length) / 2;
-    m.always_show_dot_files = matcher->always_show_dot_files;
-    m.never_show_dot_files = matcher->never_show_dot_files;
-    m.ignore_case = ignore_case;
 
     // Special case for zero-length search string.
-    if (m.needle_length == 0) {
+    if (needle_length == 0) {
         // Filter out dot files.
-        if (m.never_show_dot_files || !m.always_show_dot_files) {
-            for (size_t i = 0; i < m.haystack->candidate->length; i++) {
-                char c = m.haystack_p[i];
-                if (c == '.' && (i == 0 || m.haystack_p[i - 1] == '/')) {
+        if (never_show_dot_files || !always_show_dot_files) {
+            for (size_t i = 0; i < haystack_len; i++) {
+                char c = haystack_p[i];
+                if (c == '.' && (i == 0 || haystack_p[i - 1] == '/')) {
                     return -1.0f;
                 }
             }
         }
-    } else {
-        if (haystack->bitmask != UNSET_BITMASK) {
-            if ((matcher->needle_bitmask & haystack->bitmask) !=
-                matcher->needle_bitmask) {
-                return 0.0f;
-            }
-        }
+        return 1.0f;
+    }
 
-        // Pre-scan string:
-        // - Bail if it can't match at all.
-        // - Record rightmost match for each character (prune search space).
-        // - Record bitmask for haystack to speed up future searches.
-        size_t rightmost_match_p[m.needle_length];
-        m.rightmost_match_p = rightmost_match_p;
-        size_t needle_idx = m.needle_length - 1;
-        size_t haystack_len = m.haystack->candidate->length;
-        size_t haystack_idx = haystack_len ? haystack_len - 1 : 0;
-        long mask = 0;
-        bool found_needle = false;
-        const char *haystack_contents = m.haystack_p;
-        if (haystack_len) {
-            while (haystack_idx >= needle_idx) {
-                char c = haystack_contents[haystack_idx];
-                char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
-                if (m.ignore_case) {
-                    c = lower;
-                }
-                if (compute_bitmasks) {
-                    mask |= (1 << (lower - 'a'));
-                }
-
-                char d = m.needle_p[needle_idx];
-                if (c == d) {
-                    rightmost_match_p[needle_idx] = haystack_idx;
-                    if (needle_idx == 0) {
-                        found_needle = true;
-                        break;
-                    } else {
-                        needle_idx--;
-                    }
-                }
-
-                if (haystack_idx == 0) {
-                    break;
-                } else {
-                    haystack_idx--;
-                }
-            }
-        }
-        if (compute_bitmasks) {
-            if (haystack_len) {
-                // In case we broke out of the loop early, compute rest of mask.
-                for (size_t i = 0; i <= haystack_idx; i++) {
-                    char c = haystack_contents[i];
-                    char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
-                    mask |= (1 << (lower - 'a'));
-                }
-            }
-            haystack->bitmask = mask;
-        }
-        if (!found_needle) {
+    if (haystack->bitmask != UNSET_BITMASK) {
+        if ((matcher->needle_bitmask & haystack->bitmask) !=
+            matcher->needle_bitmask) {
             return 0.0f;
         }
-
-        // Prepare for memoization.
-        size_t haystack_limit = rightmost_match_p[m.needle_length - 1] + 1;
-        size_t memo_size = m.needle_length * haystack_limit;
-        float memo[memo_size];
-        memset(memo, UNSET_SCORE_BYTE, memo_size * sizeof(float));
-        m.memo = memo;
-        float score = recursive_match(&m, 0, 0, 0, 0.0f);
-#ifdef DEBUG_SCORING
-        fprintf(stdout, "   ");
-        for (size_t i = 0; i < m.needle_length; i++) {
-            fprintf(stdout, "    %c   ", m.needle_p[i]);
-        }
-        fprintf(stdout, "\n");
-        for (size_t i = 0; i < memo_size; i++) {
-            char formatted[8];
-            if (i % m.needle_length == 0) {
-                long haystack_idx = i / m.needle_length;
-                fprintf(stdout, "%c: ", m.haystack_p[haystack_idx]);
-            }
-            if (memo[i] == UNSET_SCORE) {
-                snprintf(formatted, sizeof(formatted), "    -  ");
-            } else {
-                snprintf(formatted, sizeof(formatted), " %-.4f", memo[i]);
-            }
-            fprintf(stdout, "%s", formatted);
-            if ((i + 1) % m.needle_length == 0) {
-                fprintf(stdout, "\n");
-            } else {
-                fprintf(stdout, " ");
-            }
-        }
-
-        fprintf(stdout, "Final score: %f\n\n", score);
-#endif
-        return score;
     }
-    return 1.0f;
+
+    // Pre-scan string:
+    // - Bail if it can't match at all.
+    // - Record rightmost match for each character (prune search space).
+    // - Record bitmask for haystack to speed up future searches.
+    size_t rightmost_match_p[needle_length];
+    size_t needle_idx = needle_length - 1;
+    size_t haystack_idx = haystack_len ? haystack_len - 1 : 0;
+    long mask = 0;
+    bool found_needle = false;
+    if (haystack_len) {
+        while (haystack_idx >= needle_idx) {
+            char c = haystack_p[haystack_idx];
+            char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
+            if (ignore_case) {
+                c = lower;
+            }
+            if (compute_bitmasks) {
+                mask |= (1 << (lower - 'a'));
+            }
+
+            char d = needle_p[needle_idx];
+            if (c == d) {
+                rightmost_match_p[needle_idx] = haystack_idx;
+                if (needle_idx == 0) {
+                    found_needle = true;
+                    break;
+                } else {
+                    needle_idx--;
+                }
+            }
+
+            if (haystack_idx == 0) {
+                break;
+            } else {
+                haystack_idx--;
+            }
+        }
+    }
+    if (compute_bitmasks) {
+        if (haystack_len) {
+            // In case we broke out of the loop early, compute rest of mask.
+            for (size_t i = 0; i <= haystack_idx; i++) {
+                char c = haystack_p[i];
+                char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
+                mask |= (1 << (lower - 'a'));
+            }
+        }
+        haystack->bitmask = mask;
+    }
+    if (!found_needle) {
+        return 0.0f;
+    }
+
+    // Only positions in `[0, limit)` can participate in a match.
+    size_t limit = rightmost_match_p[needle_length - 1] + 1;
+    float base = (1.0f / haystack_len + 1.0f / needle_length) / 2.0f;
+
+    // Dot-file handling. A "forbidden" dot is one that begins a hidden path
+    // component (a "." at index 0 or immediately after a "/"). Depending on the
+    // configured policy:
+    //
+    // - `always_show_dot_files`: no constraint.
+    // - `never_show_dot_files`: any forbidden dot in range excludes the
+    //   candidate outright.
+    // - default: a forbidden dot must be matched *explicitly* by a "." in the
+    //   needle (ie. no match may "skip over" it). This is enforced in the DP by
+    //   forbidding transitions whose skipped span contains a forbidden dot.
+    bool dot_gate = !always_show_dot_files;
+    size_t forbidden_prefix[limit + 1];
+    if (dot_gate) {
+        size_t acc = 0;
+        forbidden_prefix[0] = 0;
+        for (size_t k = 0; k < limit; k++) {
+            if (haystack_p[k] == '.' && (k == 0 || haystack_p[k - 1] == '/')) {
+                acc++;
+            }
+            forbidden_prefix[k + 1] = acc;
+        }
+        if (never_show_dot_files && acc > 0) {
+            return 0.0f;
+        }
+    }
+    bool enforce_dots = dot_gate && !never_show_dot_files;
+
+    // Forward dynamic program. `D[i][j]` is the best score for matching
+    // `needle[0..i]` with `needle[i]` anchored at haystack position `j`. We keep
+    // only the current and previous rows, each stored sparsely as a list of the
+    // reachable positions plus a position-indexed score array. Because a
+    // character's contribution depends only on its position and the previous
+    // match's position (never on run length), a single score per cell suffices
+    // to find the global maximum.
+    float score_a[limit], score_b[limit];
+    size_t list_a[limit], list_b[limit];
+    float *prev_score = score_b, *cur_score = score_a;
+    size_t *prev_list = list_b, *cur_list = list_a;
+    size_t prev_count = 0, cur_count = 0;
+
+    // Row 0: place needle[0] at each matching position.
+    char needle_0 = needle_p[0];
+    for (size_t j = 0; j <= rightmost_match_p[0]; j++) {
+        char d = haystack_p[j];
+        char d_cmp = ignore_case ? downcase(d) : d;
+        if (d_cmp != needle_0) {
+            continue;
+        }
+        // The span before the first match must not skip a forbidden dot.
+        if (enforce_dots && forbidden_prefix[j] > 0) {
+            continue;
+        }
+        float q = factor_for(haystack_p, j, 0);
+        cur_score[j] = base * q;
+        cur_list[cur_count++] = j;
+    }
+    if (cur_count == 0) {
+        return 0.0f;
+    }
+
+    // Rows 1..needle_length-1.
+    for (size_t i = 1; i < needle_length; i++) {
+        // Swap: previous row becomes what we just computed.
+        prev_count = cur_count;
+        float *ts = prev_score;
+        prev_score = cur_score;
+        cur_score = ts;
+        size_t *tl = prev_list;
+        prev_list = cur_list;
+        cur_list = tl;
+        cur_count = 0;
+
+        char needle_i = needle_p[i];
+        for (size_t j = i; j <= rightmost_match_p[i]; j++) {
+            char d = haystack_p[j];
+            char d_cmp = ignore_case ? downcase(d) : d;
+            if (d_cmp != needle_i) {
+                continue;
+            }
+
+            float best = 0.0f;
+            for (size_t t = 0; t < prev_count; t++) {
+                size_t p = prev_list[t];
+                if (p >= j) {
+                    continue;
+                }
+                // The skipped span (p, j) must not contain a forbidden dot.
+                if (enforce_dots &&
+                    forbidden_prefix[j] - forbidden_prefix[p + 1] > 0) {
+                    continue;
+                }
+
+                // A character immediately following the previous match is worth
+                // `BONUS_CONSECUTIVE`; otherwise it falls to the boundary/gap
+                // ladder. (For distance 1 the ladder is 1.0, always below the
+                // consecutive bonus, so the `max` is really just documentation.)
+                float q;
+                if (j == p + 1) {
+                    q = BONUS_CONSECUTIVE;
+                } else {
+                    q = factor_for(haystack_p, j, p);
+                }
+                float total = prev_score[p] + base * q;
+                if (total > best) {
+                    best = total;
+                }
+            }
+
+            if (best > 0.0f) {
+                cur_score[j] = best;
+                cur_list[cur_count++] = j;
+            }
+        }
+
+        if (cur_count == 0) {
+            // No way to match needle[0..i]; nothing can extend it either.
+            return 0.0f;
+        }
+    }
+
+    // The answer is the best score in the final row.
+    float score = 0.0f;
+    for (size_t t = 0; t < cur_count; t++) {
+        float s = cur_score[cur_list[t]];
+        if (s > score) {
+            score = s;
+        }
+    }
+
+#ifdef DEBUG_SCORING
+    fprintf(stdout, "needle='%.*s' ", (int)needle_length, needle_p);
+    fprintf(stdout, "haystack='%.*s' ", (int)haystack_len, haystack_p);
+    fprintf(stdout, "score=%f\n", score);
+#endif
+
+    return score;
 }

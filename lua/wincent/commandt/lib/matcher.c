@@ -349,16 +349,15 @@ static void *get_matches(void *worker_args) {
                 size_t candidate_length = haystack->candidate->length;
                 if (candidate_length > 0) {
                     // Once the heap is full (ie. `heap->count ==
-                    // matcher->limit`), the smallest score it holds is
-                    // the threshold a candidate must reach to displace
-                    // anything. Each matched character contributes at most
-                    // `max_score_per_char` to the score, so `needle_length *
-                    // max_score_per_char` is an upper bound on any score this
-                    // candidate could achieve.
+                    // matcher->limit`), the smallest score it holds is the
+                    // threshold a candidate must reach to displace anything.
+                    // `commandt_score_upper_bound()` gives the highest score
+                    // any candidate of this length could achieve for this
+                    // needle, so anything below the threshold can be skipped.
                     float threshold = HEAP_PEEK(heap)->score;
-                    float max_score_per_char =
-                        (1.0f / candidate_length + 1.0f / needle_length) / 2.0f;
-                    float upper_bound = needle_length * max_score_per_char;
+                    float upper_bound = commandt_score_upper_bound(
+                        needle_length, candidate_length
+                    );
 
                     // Slack to avoid false positives due to rounding errors
                     // (repeated floating-point additions in the scorer).
