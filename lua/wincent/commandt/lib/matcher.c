@@ -78,7 +78,7 @@ matcher_t *commandt_matcher_new(
         matcher->haystacks[i].candidate = &scanner->candidates[i];
         matcher->haystacks[i].bitmask = UNSET_BITMASK;
         matcher->haystacks[i].score = UNSET_SCORE;
-        matcher->haystacks[i].first_dot = -1;
+        matcher->haystacks[i].first_dot = -2;
     }
     matcher->initialized = count;
 
@@ -122,7 +122,7 @@ result_t *commandt_matcher_run(matcher_t *matcher, const char *needle) {
         matcher->haystacks[i].candidate = &scanner->candidates[i];
         matcher->haystacks[i].bitmask = UNSET_BITMASK;
         matcher->haystacks[i].score = UNSET_SCORE;
-        matcher->haystacks[i].first_dot = -1;
+        matcher->haystacks[i].first_dot = -2;
     }
     matcher->initialized = candidate_count;
 

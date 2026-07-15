@@ -22,9 +22,10 @@ typedef struct {
 
     /**
      * Index of the leftmost "forbidden" dot (a "." beginning a hidden path
-     * component: at index 0 or immediately after a "/"), or -1 if there is none.
-     * Like `bitmask`, this is a property of the candidate alone, so it is
-     * computed once (alongside the bitmask) and cached for reuse across searches.
+     * component: at index 0 or immediately after a "/"), or -1 if there is none;
+     * the sentinel -2 means "not yet computed". This is a property of the
+     * candidate alone, so it is computed lazily once and cached for reuse across
+     * searches (including repeated empty-query passes during streaming).
      */
     ssize_t first_dot;
 } haystack_t;

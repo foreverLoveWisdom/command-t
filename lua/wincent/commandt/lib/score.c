@@ -38,6 +38,27 @@ static inline char downcase(char c) {
     return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c;
 }
 
+// Index of the leftmost "forbidden" dot (a "." at index 0 or after a "/"), or -1
+// if the candidate has none. Computed lazily and cached on the haystack (the
+// sentinel -2 means "not yet computed"), since it depends only on the candidate
+// string and is consulted by both the empty-query dot filter and the scorer's
+// dot gate.
+static inline ssize_t forbidden_dot_index(haystack_t *haystack) {
+    if (haystack->first_dot == -2) {
+        const char *s = haystack->candidate->contents;
+        size_t len = haystack->candidate->length;
+        ssize_t found = -1;
+        for (size_t k = 0; k < len; k++) {
+            if (s[k] == '.' && (k == 0 || s[k - 1] == '/')) {
+                found = (ssize_t)k;
+                break;
+            }
+        }
+        haystack->first_dot = found;
+    }
+    return haystack->first_dot;
+}
+
 // The historical per-character factor: how much a match at `haystack_idx` is
 // worth relative to `max_score_per_char`, given that the previous matched
 // character was at `last_idx`. A distance of 0 or 1 (ie. the very first
@@ -120,14 +141,12 @@ float commandt_score(
 
     // Special case for zero-length search string.
     if (needle_length == 0) {
-        // Filter out dot files.
-        if (never_show_dot_files || !always_show_dot_files) {
-            for (size_t i = 0; i < haystack_len; i++) {
-                char c = haystack_p[i];
-                if (c == '.' && (i == 0 || haystack_p[i - 1] == '/')) {
-                    return -1.0f;
-                }
-            }
+        // Filter out dot files (using the cached leading-dot index, so repeated
+        // empty-query passes, eg. during streaming, don't rescan every
+        // candidate).
+        if ((never_show_dot_files || !always_show_dot_files) &&
+            forbidden_dot_index(haystack) >= 0) {
+            return -1.0f;
         }
         return 1.0f;
     }
@@ -187,18 +206,6 @@ float commandt_score(
             }
         }
         haystack->bitmask = mask;
-
-        // Cache the leftmost forbidden dot (a "." at index 0 or after a "/").
-        // Like the bitmask, it is a property of the candidate alone, so this
-        // once-per-candidate scan spares every subsequent search an O(len) pass.
-        ssize_t first_dot = -1;
-        for (size_t k = 0; k < haystack_len; k++) {
-            if (haystack_p[k] == '.' && (k == 0 || haystack_p[k - 1] == '/')) {
-                first_dot = (ssize_t)k;
-                break;
-            }
-        }
-        haystack->first_dot = first_dot;
     }
     if (!found_needle) {
         return 0.0f;
@@ -225,8 +232,9 @@ float commandt_score(
     // path below.
     bool enforce_dots = false;
     size_t forbidden_prefix[limit + 1];
-    if (!always_show_dot_files && haystack->first_dot >= 0 &&
-        (size_t)haystack->first_dot < limit) {
+    ssize_t first_dot =
+        always_show_dot_files ? -1 : forbidden_dot_index(haystack);
+    if (first_dot >= 0 && (size_t)first_dot < limit) {
         if (never_show_dot_files) {
             return 0.0f;
         }
