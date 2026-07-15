@@ -326,7 +326,11 @@ float commandt_score(
         bool have_prefix = false;
         row_max = 0.0f;
 
-        for (size_t j = i; j <= rightmost_match_p[i]; j++) {
+        // The leftmost position `needle[i]` could occupy is one past the leftmost
+        // reachable predecessor: any `j <= prev_list[0]` has no predecessor below
+        // it, so scanning those positions can only ever yield an empty cell.
+        size_t first_j = prev_list[0] + 1;
+        for (size_t j = first_j; j <= rightmost_match_p[i]; j++) {
             char d = haystack_p[j];
             char d_cmp = ignore_case ? downcase(d) : d;
             if (d_cmp != needle_i) {
