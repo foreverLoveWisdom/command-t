@@ -42,7 +42,16 @@ _Static_assert(
 // seeing as we built our float representation using uint32_t.
 _Static_assert(sizeof(float) == 4, "UNSET_SCORE/memset init assumes 4-byte float");
 
-float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case);
+/**
+ * Scores `haystack` against `matcher`'s needle. `threshold` is the minimum score
+ * the candidate must reach to be useful (the smallest score currently in the
+ * results heap); pass 0 to always score in full. When positive, the scorer may
+ * return early with a value below `threshold` as soon as it can prove the final
+ * score cannot reach it.
+ */
+float commandt_score(
+    haystack_t *haystack, matcher_t *matcher, bool ignore_case, float threshold
+);
 
 /**
  * An admissible upper bound on the score that any candidate of length

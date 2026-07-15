@@ -345,24 +345,24 @@ static void *get_matches(void *worker_args) {
                 continue;
             }
 
-            // Skip `commandt_score()` entirely for candidates that can't
-            // possibly enter the heap.
+            // Once the heap is full (ie. `heap->count == matcher->limit`), the
+            // smallest score it holds is the threshold a candidate must reach to
+            // displace anything. Passing it to `commandt_score()` lets the
+            // scorer abandon a candidate as soon as its best achievable score
+            // provably falls short; a threshold of 0 means "score in full".
+            float threshold = 0.0f;
             if (sort_by_score && heap->count == matcher->limit) {
+                threshold = HEAP_PEEK(heap)->score;
                 size_t candidate_length = haystack->candidate->length;
                 if (candidate_length > 0) {
-                    // Once the heap is full (ie. `heap->count ==
-                    // matcher->limit`), the smallest score it holds is the
-                    // threshold a candidate must reach to displace anything.
-                    // `commandt_score_upper_bound()` gives the highest score
-                    // any candidate of this length could achieve for this
-                    // needle, so anything below the threshold can be skipped.
-                    float threshold = HEAP_PEEK(heap)->score;
+                    // `commandt_score_upper_bound()` gives the highest score any
+                    // candidate of this length could achieve for this needle, so
+                    // anything below the threshold can be skipped without
+                    // scoring at all. Slack avoids false positives from
+                    // floating-point rounding in the scorer.
                     float upper_bound = commandt_score_upper_bound(
                         needle_length, candidate_length
                     );
-
-                    // Slack to avoid false positives due to rounding errors
-                    // (repeated floating-point additions in the scorer).
                     float slack = 1.0e-4f;
                     if (upper_bound * (1.0f + slack) < threshold) {
                         continue;
@@ -370,7 +370,8 @@ static void *get_matches(void *worker_args) {
                 }
             }
 
-            haystack->score = commandt_score(haystack, matcher, ignore_case);
+            haystack->score =
+                commandt_score(haystack, matcher, ignore_case, threshold);
 
             if (haystack->score == 0.0f) {
                 continue;

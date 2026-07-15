@@ -107,7 +107,9 @@ float commandt_score_upper_bound(size_t needle_length, size_t candidate_length) 
     return base * (1.0f + BONUS_CONSECUTIVE * (float)(needle_length - 1));
 }
 
-float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case) {
+float commandt_score(
+    haystack_t *haystack, matcher_t *matcher, bool ignore_case, float threshold
+) {
     const char *haystack_p = haystack->candidate->contents;
     size_t haystack_len = haystack->candidate->length;
     const char *needle_p = matcher->needle;
@@ -253,6 +255,16 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
     size_t *prev_list = list_b, *cur_list = list_a;
     size_t prev_count = 0, cur_count = 0;
 
+    // `row_max` is the best score in the row just completed. After row `i`, the
+    // final score cannot exceed `row_max + BONUS_CONSECUTIVE * base * remaining`
+    // (every full alignment's partial through row `i` is at most `row_max`, and
+    // each remaining character adds at most `BONUS_CONSECUTIVE * base`). So once
+    // that bound falls below `threshold` the candidate cannot enter the results
+    // heap and we abandon it, returning `row_max` (positive, so the caller still
+    // treats the candidate as a match, but below `threshold`, so it is not
+    // selected).
+    float row_max = 0.0f;
+
     // Row 0: place needle[0] at each matching position.
     char needle_0 = needle_p[0];
     for (size_t j = 0; j <= rightmost_match_p[0]; j++) {
@@ -265,12 +277,22 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
         if (enforce_dots && forbidden_prefix[j] > 0) {
             continue;
         }
-        float q = factor_for(haystack_p, j, 0);
-        cur_score[j] = base * q;
+        float c = base * factor_for(haystack_p, j, 0);
+        cur_score[j] = c;
         cur_list[cur_count++] = j;
+        if (c > row_max) {
+            row_max = c;
+        }
     }
     if (cur_count == 0) {
         return 0.0f;
+    }
+    if (threshold > 0.0f && needle_length > 1) {
+        float bound =
+            row_max + BONUS_CONSECUTIVE * base * (float)(needle_length - 1);
+        if (bound * (1.0f + 1.0e-4f) < threshold) {
+            return row_max;
+        }
     }
 
     // Rows 1..needle_length-1.
@@ -294,6 +316,7 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
         size_t pk = 0;
         float prefix_max = 0.0f;
         bool have_prefix = false;
+        row_max = 0.0f;
 
         for (size_t j = i; j <= rightmost_match_p[i]; j++) {
             char d = haystack_p[j];
@@ -325,6 +348,9 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
                 if (best > 0.0f) {
                     cur_score[j] = best;
                     cur_list[cur_count++] = j;
+                    if (best > row_max) {
+                        row_max = best;
+                    }
                 }
                 continue;
             }
@@ -381,6 +407,9 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
             if (best > 0.0f) {
                 cur_score[j] = best;
                 cur_list[cur_count++] = j;
+                if (best > row_max) {
+                    row_max = best;
+                }
             }
         }
 
@@ -388,22 +417,21 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
             // No way to match needle[0..i]; nothing can extend it either.
             return 0.0f;
         }
-    }
-
-    // The answer is the best score in the final row.
-    float score = 0.0f;
-    for (size_t t = 0; t < cur_count; t++) {
-        float s = cur_score[cur_list[t]];
-        if (s > score) {
-            score = s;
+        if (threshold > 0.0f && i < needle_length - 1) {
+            float remaining = (float)(needle_length - 1 - i);
+            float bound = row_max + BONUS_CONSECUTIVE * base * remaining;
+            if (bound * (1.0f + 1.0e-4f) < threshold) {
+                return row_max;
+            }
         }
     }
 
+    // The answer is the best score in the final row.
 #ifdef DEBUG_SCORING
     fprintf(stdout, "needle='%.*s' ", (int)needle_length, needle_p);
     fprintf(stdout, "haystack='%.*s' ", (int)haystack_len, haystack_p);
-    fprintf(stdout, "score=%f\n", score);
+    fprintf(stdout, "score=%f\n", row_max);
 #endif
 
-    return score;
+    return row_max;
 }
