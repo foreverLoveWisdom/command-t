@@ -9,7 +9,9 @@
 #ifdef DEBUG_SCORING
 #include <stdio.h> /* for fprintf, stdout */
 #endif
-#include <stdlib.h> /* for NULL */
+#include <stdlib.h> /* for NULL, free */
+
+#include "xmalloc.h" /* for xmalloc() */
 
 // Scoring tunables.
 //
@@ -33,6 +35,14 @@
 #define BONUS_DOT 0.7f // Character follows ".".
 #define BONUS_CONSECUTIVE \
     1.3f // Character immediately follows the previous match.
+
+// Longest candidate whose per-query DP scratch is served from the (small) worker
+// stack; longer candidates fall back to a single heap allocation so they cannot
+// overflow it. See `commandt_score`. (Overridable at build time so tests can
+// force the heap path.)
+#ifndef SCORE_SCRATCH_STACK
+#define SCORE_SCRATCH_STACK 2048
+#endif
 
 static inline char downcase(char c) {
     return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c;
@@ -236,6 +246,37 @@ float commandt_score(
     size_t limit = rightmost_match_p[needle_length - 1] + 1;
     float base = (1.0f / haystack_len + 1.0f / needle_length) / 2.0f;
 
+    // Per-candidate scratch, all sized by `limit`: the two DP score rows, the two
+    // reachable-position lists, and the forbidden-dot prefix sums. `limit` is
+    // bounded by the candidate's length, so for ordinary paths these fit on the
+    // stack, but a pathologically long candidate (eg. a minified buffer line)
+    // would overflow a worker thread's small stack; past `SCORE_SCRATCH_STACK`
+    // we back them with one heap block instead. Released at `done`. (Everything
+    // below this point must exit through `done`, not `return`, so the block is
+    // freed.)
+    float stack_score[2 * SCORE_SCRATCH_STACK];
+    size_t stack_list[2 * SCORE_SCRATCH_STACK];
+    size_t stack_forbidden[SCORE_SCRATCH_STACK + 1];
+    float *score_a, *score_b;
+    size_t *list_a, *list_b, *forbidden_prefix;
+    void *scratch_heap = NULL;
+    if (limit <= SCORE_SCRATCH_STACK) {
+        score_a = stack_score;
+        score_b = stack_score + limit;
+        list_a = stack_list;
+        list_b = stack_list + limit;
+        forbidden_prefix = stack_forbidden;
+    } else {
+        scratch_heap =
+            xmalloc(2 * limit * sizeof(float) + (3 * limit + 1) * sizeof(size_t));
+        score_a = (float *)scratch_heap;
+        score_b = score_a + limit;
+        list_a = (size_t *)(score_b + limit);
+        list_b = list_a + limit;
+        forbidden_prefix = list_b + limit;
+    }
+    float result = 0.0f;
+
     // Dot-file handling. A "forbidden" dot is one that begins a hidden path
     // component (a "." at index 0 or immediately after a "/"). Depending on the
     // configured policy:
@@ -252,12 +293,12 @@ float commandt_score(
     // `[0, limit)` do we pay to build the prefix sums used by the enforcement
     // path below.
     bool enforce_dots = false;
-    size_t forbidden_prefix[limit + 1];
     ssize_t first_dot =
         always_show_dot_files ? -1 : forbidden_dot_index(haystack);
     if (first_dot >= 0 && (size_t)first_dot < limit) {
         if (never_show_dot_files) {
-            return 0.0f;
+            result = 0.0f;
+            goto done;
         }
         size_t forbidden_total = 0;
         forbidden_prefix[0] = 0;
@@ -277,9 +318,8 @@ float commandt_score(
     // character's contribution depends only on its position and the previous
     // match's position (never on run length), a single score per cell suffices
     // to find the global maximum. Each row's reachable positions are appended to
-    // its list in ascending order, which the fast path below relies on.
-    float score_a[limit], score_b[limit];
-    size_t list_a[limit], list_b[limit];
+    // its list in ascending order, which the fast path below relies on. The
+    // score rows and lists are the `limit`-sized scratch allocated above.
     float *prev_score = score_b, *cur_score = score_a;
     size_t *prev_list = list_b, *cur_list = list_a;
     size_t prev_count = 0, cur_count = 0;
@@ -314,13 +354,15 @@ float commandt_score(
         }
     }
     if (cur_count == 0) {
-        return 0.0f;
+        result = 0.0f;
+        goto done;
     }
     if (threshold > 0.0f && needle_length > 1) {
         float bound =
             row_max + BONUS_CONSECUTIVE * base * (float)(needle_length - 1);
         if (bound * (1.0f + 1.0e-4f) < threshold) {
-            return row_max;
+            result = row_max;
+            goto done;
         }
     }
 
@@ -448,23 +490,31 @@ float commandt_score(
 
         if (cur_count == 0) {
             // No way to match needle[0..i]; nothing can extend it either.
-            return 0.0f;
+            result = 0.0f;
+            goto done;
         }
         if (threshold > 0.0f && i < needle_length - 1) {
             float remaining = (float)(needle_length - 1 - i);
             float bound = row_max + BONUS_CONSECUTIVE * base * remaining;
             if (bound * (1.0f + 1.0e-4f) < threshold) {
-                return row_max;
+                result = row_max;
+                goto done;
             }
         }
     }
 
     // The answer is the best score in the final row.
+    result = row_max;
+
 #ifdef DEBUG_SCORING
     fprintf(stdout, "needle='%.*s' ", (int)needle_length, needle_p);
     fprintf(stdout, "haystack='%.*s' ", (int)haystack_len, haystack_p);
-    fprintf(stdout, "score=%f\n", row_max);
+    fprintf(stdout, "score=%f\n", result);
 #endif
 
-    return row_max;
+done:
+    if (scratch_heap) {
+        free(scratch_heap);
+    }
+    return result;
 }
