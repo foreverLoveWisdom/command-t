@@ -44,6 +44,18 @@
 #define SCORE_SCRATCH_STACK 2048
 #endif
 
+// Work cap. The exact DP visits one cell per (needle character, matching
+// haystack position) pair, so a single degenerate candidate (a long, very
+// low-diversity line: minified/generated/base64 buffer content) can make one
+// score cost O(needle_length * length). Past this many matched positions we
+// abandon the exact DP for a cheap greedy pass, bounding the per-candidate work.
+// The threshold is ~25x the worst realistic candidate (a 196-char path scores
+// ~250), so no real path or line is ever approximated; only genuinely
+// pathological input is. (Overridable at build time so tests can force it.)
+#ifndef SCORE_CELL_CAP
+#define SCORE_CELL_CAP 16384
+#endif
+
 static inline char downcase(char c) {
     return c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c;
 }
@@ -122,6 +134,45 @@ static inline float boundary_factor(const char *haystack, size_t j) {
         return BONUS_DOT;
     }
     return -1.0f; // Interior (non-boundary): gap-dependent.
+}
+
+// A single greedy left-to-right alignment: match each needle character at the
+// earliest position after the previous match. Scores it with the same rules as
+// the DP, so the result is one valid alignment's score, hence a lower bound on
+// the true (maximum) score. Used only as the work-cap fallback for degenerate
+// candidates; being a lower bound, it can only ever under-rank such a candidate,
+// never displace a legitimate result.
+static float score_greedy(
+    const char *haystack,
+    size_t haystack_len,
+    const char *needle,
+    size_t needle_length,
+    float base,
+    bool ignore_case
+) {
+    float total = 0.0f;
+    size_t last = 0;
+    size_t pos = 0;
+    for (size_t i = 0; i < needle_length; i++) {
+        char nc = needle[i];
+        while (pos < haystack_len) {
+            char c = haystack[pos];
+            char lower = c >= 'A' && c <= 'Z' ? (char)(c | 0x20) : c;
+            if ((ignore_case ? lower : c) == nc) {
+                break;
+            }
+            pos++;
+        }
+        // The needle is a subsequence of the haystack (the pre-scan proved it),
+        // so a match is always found before the end.
+        float q = (i > 0 && pos == last + 1)
+            ? BONUS_CONSECUTIVE
+            : factor_for(haystack, pos, i == 0 ? 0 : last);
+        total += base * q;
+        last = pos;
+        pos++;
+    }
+    return total;
 }
 
 float commandt_score_upper_bound(size_t needle_length, size_t candidate_length) {
@@ -334,6 +385,12 @@ float commandt_score(
     // selected).
     float row_max = 0.0f;
 
+    // Running count of matched positions processed; past `SCORE_CELL_CAP` we bail
+    // to the greedy fallback (unless the dot gate is engaged, which the greedy
+    // pass does not model, but which never coincides with degenerate input in
+    // practice). See `SCORE_CELL_CAP`.
+    size_t cells = 0;
+
     // Row 0: place needle[0] at each matching position.
     char needle_0 = needle_p[0];
     for (size_t j = 0; j <= rightmost_match_p[0]; j++) {
@@ -345,6 +402,9 @@ float commandt_score(
         // The span before the first match must not skip a forbidden dot.
         if (enforce_dots && forbidden_prefix[j] > 0) {
             continue;
+        }
+        if (++cells > SCORE_CELL_CAP && !enforce_dots) {
+            goto capped;
         }
         float c = base * factor_for(haystack_p, j, 0);
         cur_score[j] = c;
@@ -398,6 +458,9 @@ float commandt_score(
             char d_cmp = ignore_case ? downcase(d) : d;
             if (d_cmp != needle_i) {
                 continue;
+            }
+            if (++cells > SCORE_CELL_CAP && !enforce_dots) {
+                goto capped;
             }
 
             if (enforce_dots) {
@@ -511,6 +574,15 @@ float commandt_score(
     fprintf(stdout, "haystack='%.*s' ", (int)haystack_len, haystack_p);
     fprintf(stdout, "score=%f\n", result);
 #endif
+
+    goto done;
+
+capped:
+    // Too many matched positions for the exact DP to be worthwhile on this
+    // (degenerate) candidate; fall back to a single greedy alignment.
+    result = score_greedy(
+        haystack_p, haystack_len, needle_p, needle_length, base, ignore_case
+    );
 
 done:
     if (scratch_heap) {

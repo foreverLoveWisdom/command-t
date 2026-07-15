@@ -400,6 +400,16 @@ describe('matcher.c', function()
       })
     end)
 
+    it('matches a pathologically long, low-diversity candidate', function()
+      -- A very long, low-diversity line (eg. minified or generated buffer
+      -- content) makes the exact scorer's work explode. The work cap falls back
+      -- to a greedy pass, so such a candidate is still matched promptly rather
+      -- than hanging; a non-matching candidate is still excluded.
+      local long = string.rep('a', 40000)
+      local matcher = get_matcher({ long, 'zzz' })
+      expect(matcher.match('aaa')).to_equal({ long })
+    end)
+
     it('correctly handles a limits', function()
       -- Regression introduced in 08f4ce135ab7abff, fixed in 41ca3dc2a87109d2b.
       --
