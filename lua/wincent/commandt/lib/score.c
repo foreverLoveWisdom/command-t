@@ -70,6 +70,29 @@ static inline float factor_for(const char *haystack, size_t j, size_t last_idx) 
     return (1.0f / distance) * 0.75f;
 }
 
+// The part of `factor_for()` that does *not* depend on the previous match's
+// position: the boundary bonus for a character at `j` (which is a function of
+// `haystack[j - 1]` and `haystack[j]` alone). Returns a negative sentinel when
+// the character sits in the interior of a word, where the factor instead decays
+// with the gap and so genuinely depends on the previous match. Requires j >= 1.
+static inline float boundary_factor(const char *haystack, size_t j) {
+    char last = haystack[j - 1];
+    char d = haystack[j];
+    if (last >= 'a' && last <= 'z') {
+        if (d >= 'A' && d <= 'Z') {
+            return BONUS_CAMEL;
+        }
+        return -1.0f; // Interior of a word: gap-dependent.
+    } else if (last == '/') {
+        return BONUS_SLASH;
+    } else if (last == '-' || last == '_' || last == ' ' || (last >= '0' && last <= '9')) {
+        return BONUS_WORD;
+    } else if (last == '.') {
+        return BONUS_DOT;
+    }
+    return -1.0f; // Interior (non-boundary): gap-dependent.
+}
+
 float commandt_score_upper_bound(size_t needle_length, size_t candidate_length) {
     if (needle_length == 0 || candidate_length == 0) {
         return 1.0f;
@@ -183,20 +206,22 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
     //   forbidding transitions whose skipped span contains a forbidden dot.
     bool dot_gate = !always_show_dot_files;
     size_t forbidden_prefix[limit + 1];
+    size_t forbidden_total = 0;
     if (dot_gate) {
-        size_t acc = 0;
         forbidden_prefix[0] = 0;
         for (size_t k = 0; k < limit; k++) {
             if (haystack_p[k] == '.' && (k == 0 || haystack_p[k - 1] == '/')) {
-                acc++;
+                forbidden_total++;
             }
-            forbidden_prefix[k + 1] = acc;
+            forbidden_prefix[k + 1] = forbidden_total;
         }
-        if (never_show_dot_files && acc > 0) {
+        if (never_show_dot_files && forbidden_total > 0) {
             return 0.0f;
         }
     }
-    bool enforce_dots = dot_gate && !never_show_dot_files;
+    // Only take the (slower) dot-aware transition path when there is actually a
+    // forbidden dot to avoid skipping over; otherwise the constraint is vacuous.
+    bool enforce_dots = dot_gate && !never_show_dot_files && forbidden_total > 0;
 
     // Forward dynamic program. `D[i][j]` is the best score for matching
     // `needle[0..i]` with `needle[i]` anchored at haystack position `j`. We keep
@@ -204,7 +229,8 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
     // reachable positions plus a position-indexed score array. Because a
     // character's contribution depends only on its position and the previous
     // match's position (never on run length), a single score per cell suffices
-    // to find the global maximum.
+    // to find the global maximum. Each row's reachable positions are appended to
+    // its list in ascending order, which the fast path below relies on.
     float score_a[limit], score_b[limit];
     size_t list_a[limit], list_b[limit];
     float *prev_score = score_b, *cur_score = score_a;
@@ -244,6 +270,15 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
         cur_count = 0;
 
         char needle_i = needle_p[i];
+
+        // `prefix_max` tracks the best previous-row score among positions
+        // `p <= j - 2` (ie. eligible non-consecutive predecessors), advanced
+        // incrementally as `j` increases. `pk` is how far into `prev_list` it has
+        // consumed.
+        size_t pk = 0;
+        float prefix_max = 0.0f;
+        bool have_prefix = false;
+
         for (size_t j = i; j <= rightmost_match_p[i]; j++) {
             char d = haystack_p[j];
             char d_cmp = ignore_case ? downcase(d) : d;
@@ -251,31 +286,79 @@ float commandt_score(haystack_t *haystack, matcher_t *matcher, bool ignore_case)
                 continue;
             }
 
-            float best = 0.0f;
-            for (size_t t = 0; t < prev_count; t++) {
-                size_t p = prev_list[t];
-                if (p >= j) {
-                    continue;
+            if (enforce_dots) {
+                // Rare path: a forbidden dot is present, so predecessors are
+                // only valid when the span they skip contains none. Fall back to
+                // a straightforward scan.
+                float best = 0.0f;
+                for (size_t t = 0; t < prev_count; t++) {
+                    size_t p = prev_list[t];
+                    if (p >= j) {
+                        break;
+                    }
+                    if (forbidden_prefix[j] - forbidden_prefix[p + 1] > 0) {
+                        continue;
+                    }
+                    float q = j == p + 1 ? BONUS_CONSECUTIVE
+                                         : factor_for(haystack_p, j, p);
+                    float total = prev_score[p] + base * q;
+                    if (total > best) {
+                        best = total;
+                    }
                 }
-                // The skipped span (p, j) must not contain a forbidden dot.
-                if (enforce_dots &&
-                    forbidden_prefix[j] - forbidden_prefix[p + 1] > 0) {
-                    continue;
+                if (best > 0.0f) {
+                    cur_score[j] = best;
+                    cur_list[cur_count++] = j;
                 }
+                continue;
+            }
 
-                // A character immediately following the previous match is worth
-                // `BONUS_CONSECUTIVE`; otherwise it falls to the boundary/gap
-                // ladder. (For distance 1 the ladder is 1.0, always below the
-                // consecutive bonus, so the `max` is really just documentation.)
-                float q;
-                if (j == p + 1) {
-                    q = BONUS_CONSECUTIVE;
-                } else {
-                    q = factor_for(haystack_p, j, p);
+            // Fast path. Fold every eligible non-consecutive predecessor
+            // `p <= j - 2` into `prefix_max`. Afterwards `prev_list[pk]` is the
+            // first entry `> j - 2`, so it names the consecutive predecessor
+            // exactly when it equals `j - 1`.
+            while (pk < prev_count && prev_list[pk] + 2 <= j) {
+                float s = prev_score[prev_list[pk]];
+                if (!have_prefix || s > prefix_max) {
+                    prefix_max = s;
+                    have_prefix = true;
                 }
-                float total = prev_score[p] + base * q;
-                if (total > best) {
-                    best = total;
+                pk++;
+            }
+
+            float best = 0.0f;
+
+            // Consecutive predecessor at `j - 1` (worth `BONUS_CONSECUTIVE`).
+            if (pk < prev_count && prev_list[pk] == j - 1) {
+                best = prev_score[j - 1] + base * BONUS_CONSECUTIVE;
+            }
+
+            if (have_prefix) {
+                float bf = boundary_factor(haystack_p, j);
+                if (bf >= 0.0f) {
+                    // Boundary bonus is independent of the predecessor, so the
+                    // best non-consecutive score just adds it to `prefix_max`.
+                    float cand = base * bf + prefix_max;
+                    if (cand > best) {
+                        best = cand;
+                    }
+                } else {
+                    // Interior gap: contribution `base * 0.75 / (j - p)` shrinks
+                    // as the gap grows. Scan predecessors closest-first and stop
+                    // once even `prefix_max` plus the (decreasing) gap term can no
+                    // longer beat the best found so far.
+                    float k = base * 0.75f;
+                    for (size_t t = pk; t-- > 0;) {
+                        size_t p = prev_list[t];
+                        float gap_term = k / (float)(j - p);
+                        if (prefix_max + gap_term <= best) {
+                            break;
+                        }
+                        float cand = prev_score[p] + gap_term;
+                        if (cand > best) {
+                            best = cand;
+                        }
+                    }
                 }
             }
 
