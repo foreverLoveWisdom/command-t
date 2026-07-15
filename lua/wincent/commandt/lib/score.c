@@ -141,9 +141,30 @@ float commandt_score(
 
     // Special case for zero-length search string.
     if (needle_length == 0) {
+        // The empty query visits every candidate before the user types anything,
+        // and again on every redraw while a streaming finder fills in. Seize
+        // that pass to compute the bitmask and leading-dot index in one go, so
+        // the O(n) mask work happens at finder-open (or is spread across the
+        // streaming redraws) rather than spiking on the first keystroke, which
+        // can then use the bitmask prefilter instead of scanning every candidate
+        // to build the masks itself.
+        if (compute_bitmasks) {
+            long mask = 0;
+            ssize_t first_dot = -1;
+            for (size_t i = 0; i < haystack_len; i++) {
+                char c = haystack_p[i];
+                char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
+                mask |= (1 << (lower - 'a'));
+                if (first_dot < 0 && c == '.' &&
+                    (i == 0 || haystack_p[i - 1] == '/')) {
+                    first_dot = (ssize_t)i;
+                }
+            }
+            haystack->bitmask = mask;
+            haystack->first_dot = first_dot;
+        }
         // Filter out dot files (using the cached leading-dot index, so repeated
-        // empty-query passes, eg. during streaming, don't rescan every
-        // candidate).
+        // empty-query passes don't rescan every candidate).
         if ((never_show_dot_files || !always_show_dot_files) &&
             forbidden_dot_index(haystack) >= 0) {
             return -1.0f;
