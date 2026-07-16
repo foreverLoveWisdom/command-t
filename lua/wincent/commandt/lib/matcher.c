@@ -14,10 +14,10 @@
 #include <string.h> /* for memcpy(), strcpy(), strlen() */
 
 #ifdef __APPLE__
-#  include <dispatch/dispatch.h> /* for dispatch_semaphore_t and friends */
+#include <dispatch/dispatch.h> /* for dispatch_semaphore_t and friends */
 #else
-#  include <errno.h> /* for errno, EINTR */
-#  include <semaphore.h> /* for sem_t, sem_init(), sem_post(), sem_wait() */
+#include <errno.h> /* for errno, EINTR */
+#include <semaphore.h> /* for sem_t, sem_init(), sem_post(), sem_wait() */
 #endif
 
 #include "commandt.h" /* for haystack_t, matcher_t, scanner_t */
