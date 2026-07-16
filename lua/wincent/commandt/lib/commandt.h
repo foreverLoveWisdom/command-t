@@ -100,6 +100,14 @@ typedef struct {
     void *thread; // Producer `pthread_t *`, or NULL.
 } scanner_t;
 
+/**
+ * Opaque, persistent per-matcher worker pool (defined in `matcher.c`). The
+ * worker threads are created once (in `commandt_matcher_new()`) and joined once
+ * (in `commandt_matcher_free()`) rather than being spawned and joined on every
+ * `commandt_matcher_run()`.
+ */
+typedef struct matcher_pool matcher_pool_t;
+
 // TODO flesh this out; basically make it a container for instance variables
 typedef struct {
     /**
@@ -144,6 +152,13 @@ typedef struct {
      */
     size_t haystacks_size;
     unsigned initialized;
+
+    /**
+     * Persistent worker pool (see `matcher_pool_t`), reused across every run.
+     * `NULL` when the matcher is configured for a single thread (there are no
+     * background workers to pool).
+     */
+    matcher_pool_t *pool;
 } matcher_t;
 
 typedef struct {

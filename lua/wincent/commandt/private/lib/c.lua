@@ -35,6 +35,8 @@ ffi.cdef([[
       void *thread;
   } scanner_t;
 
+  typedef struct matcher_pool matcher_pool_t;
+
   typedef struct {
       scanner_t *scanner;
       haystack_t *haystacks;
@@ -52,6 +54,7 @@ ffi.cdef([[
       size_t last_needle_length;
       size_t haystacks_size;
       unsigned initialized;
+      matcher_pool_t *pool;
   } matcher_t;
 
   typedef struct {
