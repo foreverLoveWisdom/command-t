@@ -7,9 +7,9 @@
 
 #include <stddef.h> /* for size_t */
 #ifdef DEBUG_SCORING
-#include <stdio.h> /* for fprintf, stdout */
+#include <stdio.h> /* for fprintf(), stdout */
 #endif
-#include <stdlib.h> /* for NULL, free */
+#include <stdlib.h> /* for NULL, free() */
 
 #include "xmalloc.h" /* for xmalloc() */
 
