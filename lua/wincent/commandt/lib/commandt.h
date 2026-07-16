@@ -13,7 +13,9 @@
 #include "str.h" /* for str_t */
 
 /**
- *  Represents a single "haystack" (ie. a string to be searched for the needle).
+ * @internal
+ *
+ * Represents a single "haystack" (ie. a string to be searched for the needle).
  */
 typedef struct {
     str_t *candidate;
@@ -88,27 +90,65 @@ typedef struct {
     /**
      * @internal
      *
-     * Streaming/async production state. Not read from Lua, but mirrored in the
-     * FFI cdef for layout consistency with the other structs.
+     * Streaming/async production state.
      */
     int kind; // `scanner_kind_t`.
+
+    /**
+     * @internal
+     *
+     * Streaming/async production state.
+     */
     int fd; // Read end of the child's stdout pipe, or -1.
+
+    /**
+     * @internal
+     *
+     * Streaming/async production state.
+     */
     int pid; // Child PID, or -1.
+
+    /**
+     * @internal
+     *
+     * Streaming/async production state.
+     */
     unsigned drop; // Leading characters to drop from each candidate.
+
+    /**
+     * @internal
+     *
+     * Streaming/async production state.
+     */
     unsigned max_files; // Cap on candidate count, or 0 for unlimited.
+
+    /**
+     * @internal
+     *
+     * Streaming/async production state.
+     */
     int done; // Non-zero once production has finished.
+
+    /**
+     * @internal
+     *
+     * Streaming/async production state.
+     */
     void *thread; // Producer `pthread_t *`, or NULL.
 } scanner_t;
 
 /**
- * Opaque, persistent per-matcher worker pool (defined in `matcher.c`). The
- * worker threads are created once (in `commandt_matcher_new()`) and joined once
- * (in `commandt_matcher_free()`) rather than being spawned and joined on every
- * `commandt_matcher_run()`.
+ * @internal
+ *
+ * Opaque, persistent per-matcher worker pool (defined in `matcher.c`).
  */
 typedef struct matcher_pool matcher_pool_t;
 
-// TODO flesh this out; basically make it a container for instance variables
+/**
+ * @internal
+ *
+ * The matcher's instance state.
+ */
 typedef struct {
     /**
      * Note the matcher doesn't take ownership of the `scanner` as these can be
