@@ -215,7 +215,7 @@ local variance = function(values)
   for _, value in ipairs(values) do
     result = result + (mean - value) ^ 2
   end
-  return result
+  return result / #values
 end
 
 local DIFFERENCE = 1
