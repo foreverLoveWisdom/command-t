@@ -490,6 +490,7 @@ static void *get_matches(void *worker_args) {
     bool ignore_case = ((worker_args_t *)worker_args)->ignore_case;
     unsigned candidate_count = ((worker_args_t *)worker_args)->candidate_count;
     size_t needle_length = matcher->needle_length;
+    bool narrowing = matcher->last_needle != NULL;
 
     // The empty query and the lone "." query are ordered alphabetically;
     // otherwise we sort by score.
@@ -514,7 +515,7 @@ static void *get_matches(void *worker_args) {
             if (matcher->needle_bitmask == UNSET_BITMASK) {
                 haystack->bitmask = UNSET_BITMASK;
             }
-            if (matcher->last_needle != NULL && haystack->score == 0.0f) {
+            if (narrowing && haystack->score == 0.0f) {
                 // Skip over this candidate because it didn't match last
                 // time and it can't match this time either.
                 continue;
@@ -540,6 +541,12 @@ static void *get_matches(void *worker_args) {
                     );
                     float slack = 1.0e-4f;
                     if (upper_bound * (1.0f + slack) < threshold) {
+                        // We did not establish whether this candidate matches the
+                        // current query. A stale zero would incorrectly mark it
+                        // as a known non-match if the query is then extended.
+                        if (!narrowing && haystack->score == 0.0f) {
+                            haystack->score = UNSET_SCORE;
+                        }
                         continue;
                     }
                 }

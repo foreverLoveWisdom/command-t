@@ -400,6 +400,19 @@ describe('matcher.c', function()
       })
     end)
 
+    it('retains a pruned match when the query is extended', function()
+      local matcher = get_matcher({ 'a', 'ab' }, { height = 1 })
+
+      -- Give both candidates a zero score, then switch to a non-extension that
+      -- fills the heap with the shorter candidate and prunes the longer one.
+      expect(matcher.match('z')).to_equal({})
+      expect(matcher.match('a')).to_equal({ 'a' })
+
+      -- The pruned candidate still matched "a", so extending the query must
+      -- reconsider it rather than treating its stale zero as a non-match.
+      expect(matcher.match('ab')).to_equal({ 'ab' })
+    end)
+
     it('matches a pathologically long, low-diversity candidate', function()
       -- A very long, low-diversity line (eg. minified or generated buffer
       -- content) makes the exact scorer's work explode. The work cap falls back
