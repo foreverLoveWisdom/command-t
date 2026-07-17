@@ -209,7 +209,9 @@ return {
             end,
           },
           fn = {
-            fnamemodify = function(name, modifier) end,
+            fnamemodify = function(name, _modifier)
+              return name
+            end,
           },
         }
       end,
