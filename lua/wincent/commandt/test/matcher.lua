@@ -71,6 +71,15 @@ describe('matcher.c', function()
       expect(matcher.match('xyz')).to_equal({})
     end)
 
+    -- This one only fails when built with UndefinedBehaviorSanitizer (CI).
+    it('handles non-letter bytes while caching candidate bitmasks', function()
+      local matcher = get_matcher({ '/', '.', '-', '_', '0', '\255' })
+      matcher.match('')
+      for _, query in ipairs({ 'm', 'n', 'o', 'p' }) do
+        expect(matcher.match(query)).to_equal({})
+      end
+    end)
+
     it('considers the empty string to match everything', function()
       local matcher = get_matcher({ 'foo' })
       expect(matcher.match('')).to_equal({ 'foo' })

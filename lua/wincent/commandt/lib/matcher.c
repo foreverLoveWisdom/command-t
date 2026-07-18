@@ -456,10 +456,11 @@ void commandt_result_free(result_t *result) {
 static long calculate_bitmask(const char *str, unsigned long length) {
     long mask = 0;
     for (unsigned long i = 0; i < length; i++) {
-        if (str[i] >= 'a' && str[i] <= 'z') {
-            mask |= (1 << (str[i] - 'a'));
-        } else if (str[i] >= 'A' && str[i] <= 'Z') {
-            mask |= (1 << (str[i] - 'A'));
+        unsigned char c = (unsigned char)str[i];
+        if (c >= 'a' && c <= 'z') {
+            mask |= UINT32_C(1) << (c - 'a');
+        } else if (c >= 'A' && c <= 'Z') {
+            mask |= UINT32_C(1) << (c - 'A');
         }
     }
     return mask;

@@ -13,6 +13,16 @@
 
 #define UNSET_BITMASK (-1)
 
+// Map a candidate byte into one of 32 lossy buckets. Uppercase and lowercase
+// ASCII letters differ by 32 and therefore share a bucket. Non-letters may
+// collide with letters, producing harmless false positives in the prefilter.
+// Masking the index makes the 32-bit shift defined while compiling to the same
+// wrapping scalar shift used by the historical scorer.
+static inline uint32_t commandt_haystack_char_bit(unsigned char c) {
+    unsigned index = ((unsigned)c - (unsigned)'a') & 31u;
+    return UINT32_C(1) << index;
+}
+
 // Raw byte for use with memset(), so we can initialize the entire memoization
 // matrix in a single highly-optimized call.
 #define UNSET_SCORE_BYTE 0x7f

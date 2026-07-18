@@ -215,7 +215,7 @@ float commandt_score(
             for (size_t i = 0; i < haystack_len; i++) {
                 char c = haystack_p[i];
                 char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
-                mask |= (1 << (lower - 'a'));
+                mask |= commandt_haystack_char_bit((unsigned char)lower);
                 if (first_dot < 0 && c == '.' &&
                     (i == 0 || haystack_p[i - 1] == '/')) {
                     first_dot = (ssize_t)i;
@@ -257,7 +257,7 @@ float commandt_score(
                 c = lower;
             }
             if (compute_bitmasks) {
-                mask |= (1 << (lower - 'a'));
+                mask |= commandt_haystack_char_bit((unsigned char)lower);
             }
 
             char d = needle_p[needle_idx];
@@ -284,7 +284,7 @@ float commandt_score(
             for (size_t i = 0; i <= haystack_idx; i++) {
                 char c = haystack_p[i];
                 char lower = c >= 'A' && c <= 'Z' ? c | 0x20 : c;
-                mask |= (1 << (lower - 'a'));
+                mask |= commandt_haystack_char_bit((unsigned char)lower);
             }
         }
         haystack->bitmask = mask;
