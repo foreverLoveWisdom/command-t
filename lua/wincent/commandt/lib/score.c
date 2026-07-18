@@ -198,7 +198,8 @@ float commandt_score(
     size_t needle_length = matcher->needle_length;
     bool always_show_dot_files = matcher->always_show_dot_files;
     bool never_show_dot_files = matcher->never_show_dot_files;
-    bool compute_bitmasks = haystack->bitmask == UNSET_BITMASK;
+    bool compute_bitmasks =
+        !commandt_haystack_bitmask_computed(haystack->bitmask);
 
     // Special case for zero-length search string.
     if (needle_length == 0) {
@@ -210,7 +211,7 @@ float commandt_score(
         // can then use the bitmask prefilter instead of scanning every candidate
         // to build the masks itself.
         if (compute_bitmasks) {
-            long mask = 0;
+            uint32_t mask = HAYSTACK_BITMASK_COMPUTED;
             ssize_t first_dot = -1;
             for (size_t i = 0; i < haystack_len; i++) {
                 char c = haystack_p[i];
@@ -233,7 +234,7 @@ float commandt_score(
         return 1.0f;
     }
 
-    if (haystack->bitmask != UNSET_BITMASK) {
+    if (commandt_haystack_bitmask_computed(haystack->bitmask)) {
         if ((matcher->needle_bitmask & haystack->bitmask) !=
             matcher->needle_bitmask) {
             return 0.0f;
@@ -247,7 +248,7 @@ float commandt_score(
     size_t rightmost_match_p[needle_length];
     size_t needle_idx = needle_length - 1;
     size_t haystack_idx = haystack_len ? haystack_len - 1 : 0;
-    long mask = 0;
+    uint32_t mask = HAYSTACK_BITMASK_COMPUTED;
     bool found_needle = false;
     if (haystack_len) {
         while (haystack_idx >= needle_idx) {

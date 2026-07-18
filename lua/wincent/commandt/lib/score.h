@@ -11,7 +11,15 @@
 
 #include "commandt.h" /* for haystack_t, matcher_t */
 
-#define UNSET_BITMASK (-1)
+// Needle masks use only bits 0..25, so bit 31 can track whether a candidate
+// mask has been computed without affecting the subset test.
+#define UNSET_HAYSTACK_BITMASK UINT32_C(0)
+#define UNSET_NEEDLE_BITMASK UINT32_MAX
+#define HAYSTACK_BITMASK_COMPUTED (UINT32_C(1) << 31)
+
+static inline bool commandt_haystack_bitmask_computed(uint32_t bitmask) {
+    return (bitmask & HAYSTACK_BITMASK_COMPUTED) != 0;
+}
 
 // Map a candidate byte into one of 32 lossy buckets. Uppercase and lowercase
 // ASCII letters differ by 32 and therefore share a bucket. Non-letters may

@@ -19,7 +19,7 @@
  */
 typedef struct {
     str_t *candidate;
-    long bitmask;
+    uint32_t bitmask;
     float score;
 
     /**
@@ -179,7 +179,7 @@ typedef struct {
      */
     const char *needle;
     size_t needle_length;
-    long needle_bitmask;
+    uint32_t needle_bitmask;
 
     const char *last_needle;
     size_t last_needle_length;

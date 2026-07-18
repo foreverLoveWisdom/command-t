@@ -135,7 +135,7 @@ struct matcher_pool {
 };
 
 // Forward declarations.
-static long calculate_bitmask(const char *str, unsigned long length);
+static uint32_t calculate_bitmask(const char *str, unsigned long length);
 static int cmp_alpha_p(const void *a, const void *b);
 static int cmp_score_p(const void *a, const void *b);
 static void *get_matches(void *worker_args);
@@ -237,7 +237,7 @@ matcher_t *commandt_matcher_new(
     unsigned count = __atomic_load_n(&scanner->count, __ATOMIC_ACQUIRE);
     for (unsigned i = 0; i < count; i++) {
         matcher->haystacks[i].candidate = &scanner->candidates[i];
-        matcher->haystacks[i].bitmask = UNSET_BITMASK;
+        matcher->haystacks[i].bitmask = UNSET_HAYSTACK_BITMASK;
         matcher->haystacks[i].score = UNSET_SCORE;
         matcher->haystacks[i].first_dot = -2;
     }
@@ -252,7 +252,7 @@ matcher_t *commandt_matcher_new(
     matcher->threads = (unsigned int)threads;
     matcher->needle = NULL;
     matcher->needle_length = 0;
-    matcher->needle_bitmask = UNSET_BITMASK;
+    matcher->needle_bitmask = UNSET_NEEDLE_BITMASK;
     matcher->last_needle = NULL;
     matcher->last_needle_length = 0;
 
@@ -289,7 +289,7 @@ result_t *commandt_matcher_run(matcher_t *matcher, const char *needle) {
     // synchronization is needed.
     for (unsigned i = matcher->initialized; i < candidate_count; i++) {
         matcher->haystacks[i].candidate = &scanner->candidates[i];
-        matcher->haystacks[i].bitmask = UNSET_BITMASK;
+        matcher->haystacks[i].bitmask = UNSET_HAYSTACK_BITMASK;
         matcher->haystacks[i].score = UNSET_SCORE;
         matcher->haystacks[i].first_dot = -2;
     }
@@ -453,8 +453,8 @@ void commandt_result_free(result_t *result) {
     free(result);
 }
 
-static long calculate_bitmask(const char *str, unsigned long length) {
-    long mask = 0;
+static uint32_t calculate_bitmask(const char *str, unsigned long length) {
+    uint32_t mask = 0;
     for (unsigned long i = 0; i < length; i++) {
         unsigned char c = (unsigned char)str[i];
         if (c >= 'a' && c <= 'z') {
@@ -513,8 +513,8 @@ static void *get_matches(void *worker_args) {
         }
         for (unsigned i = chunk_start; i < chunk_end; i++) {
             haystack_t *haystack = matcher->haystacks + i;
-            if (matcher->needle_bitmask == UNSET_BITMASK) {
-                haystack->bitmask = UNSET_BITMASK;
+            if (matcher->needle_bitmask == UNSET_NEEDLE_BITMASK) {
+                haystack->bitmask = UNSET_HAYSTACK_BITMASK;
             }
             if (narrowing && haystack->score == 0.0f) {
                 // Skip over this candidate because it didn't match last
