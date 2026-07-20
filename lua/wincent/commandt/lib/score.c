@@ -11,7 +11,7 @@
 #endif
 #include <stdlib.h> /* for NULL, free() */
 
-#include "xmalloc.h" /* for xmalloc() */
+#include "xmalloc.h" /* for xcalloc(), xmalloc() */
 
 // Scoring tunables.
 //
@@ -175,6 +175,313 @@ static float score_greedy(
     return total;
 }
 
+// Try the ordinary left-to-right greedy alignment while rejecting any path
+// that skips a forbidden dot. Most capped hidden-dot candidates take this cheap
+// path and retain the same useful lower-bound score as ordinary capped input.
+// `valid` tells the caller whether the returned score belongs to a complete
+// alignment or whether the complete fallback below is still needed.
+static float score_greedy_with_dots(
+    const char *haystack,
+    size_t limit,
+    const char *needle,
+    size_t needle_length,
+    float base,
+    bool ignore_case,
+    bool *valid
+) {
+    float total = 0.0f;
+    size_t last = 0;
+    size_t pos = 0;
+    *valid = false;
+    for (size_t i = 0; i < needle_length; i++) {
+        char needle_char = needle[i];
+        while (pos < limit) {
+            char c = haystack[pos];
+            char compared = ignore_case ? downcase(c) : c;
+            bool matches = compared == needle_char;
+            if (c == '.' && (pos == 0 || haystack[pos - 1] == '/') && !matches) {
+                return 0.0f;
+            }
+            if (matches) {
+                break;
+            }
+            pos++;
+        }
+        if (pos == limit) {
+            return 0.0f;
+        }
+        float factor = i > 0 && pos == last + 1
+            ? BONUS_CONSECUTIVE
+            : factor_for(haystack, pos, i == 0 ? 0 : last);
+        total += base * factor;
+        last = pos++;
+    }
+    *valid = true;
+    return total;
+}
+
+// Determine whether a dot-constrained candidate still matches after the exact
+// DP reaches its work cap. A bitset tracks every reachable needle-prefix length:
+// ordinary characters may be skipped or consumed, while crossing a forbidden
+// dot requires the next needle character to be a dot. That query dot may consume
+// the current hidden dot or keep searching for a later one. For human-sized
+// needles this uses one or two machine words and is linear in candidate length.
+static float score_with_dots_fallback(
+    const char *haystack,
+    size_t limit,
+    const char *needle,
+    size_t needle_length,
+    float base,
+    bool ignore_case
+) {
+    bool greedy_valid;
+    float greedy = score_greedy_with_dots(
+        haystack, limit, needle, needle_length, base, ignore_case, &greedy_valid
+    );
+    if (greedy_valid) {
+        return greedy;
+    }
+
+    size_t words = (needle_length + 64) / 64;
+    uint64_t *masks = xcalloc(256 * words, sizeof(uint64_t));
+    uint64_t *states = xcalloc(words, sizeof(uint64_t));
+    uint64_t *next_states = xmalloc(words * sizeof(uint64_t));
+
+    for (size_t i = 0; i < needle_length; i++) {
+        unsigned char c = (unsigned char)needle[i];
+        masks[(size_t)c * words + i / 64] |= UINT64_C(1) << (i % 64);
+    }
+    states[0] = UINT64_C(1); // Zero needle characters matched.
+
+    size_t full_word = needle_length / 64;
+    uint64_t full_bit = UINT64_C(1) << (needle_length % 64);
+    float result = 0.0f;
+
+    for (size_t pos = 0; pos < limit; pos++) {
+        char c = haystack[pos];
+        bool forbidden = c == '.' && (pos == 0 || haystack[pos - 1] == '/');
+        char compared = ignore_case ? downcase(c) : c;
+        uint64_t *mask = masks + (size_t)(unsigned char)compared * words;
+        uint64_t carry = 0;
+
+        if (forbidden) {
+            bool any = false;
+            for (size_t w = 0; w < words; w++) {
+                uint64_t eligible = states[w] & mask[w];
+                // While the next needle character is a dot, we may either keep
+                // searching past this hidden component or consume its dot now.
+                next_states[w] = eligible | (eligible << 1) | carry;
+                carry = eligible >> 63;
+                any = any || next_states[w] != 0;
+            }
+            if (!any) {
+                goto done;
+            }
+            for (size_t w = 0; w < words; w++) {
+                states[w] = next_states[w];
+            }
+        } else {
+            for (size_t w = 0; w < words; w++) {
+                uint64_t eligible = states[w] & mask[w];
+                uint64_t shifted = (eligible << 1) | carry;
+                carry = eligible >> 63;
+                states[w] |= shifted;
+            }
+        }
+
+        if (states[full_word] & full_bit) {
+            // Every matched character contributes at least `base * 0.5 / limit`
+            // under the scoring ladder. Return that conservative positive lower
+            // bound, preserving the capped scorer's under-ranking guarantee.
+            result = base * 0.5f * (float)needle_length / (float)limit;
+            goto done;
+        }
+    }
+
+done:
+    free(next_states);
+    free(states);
+    free(masks);
+    return result;
+}
+
+// Exact forward DP for candidates whose matchable range contains one or more
+// forbidden dots. For a non-dot needle character, a transition from predecessor
+// `p` to position `j` is valid exactly when `p` is at or after the latest
+// forbidden dot before `j`. Dot rows may keep searching across hidden components
+// and match a later dot. Other rows advance a segment-start cursor at forbidden
+// dots and use the same prefix-maximum optimization as the common scorer.
+static float score_with_dots(
+    const char *haystack,
+    const char *needle,
+    size_t needle_length,
+    const size_t *rightmost_match,
+    size_t limit,
+    float base,
+    bool ignore_case,
+    float threshold,
+    float *score_a,
+    float *score_b,
+    size_t *list_a,
+    size_t *list_b,
+    const size_t *forbidden,
+    size_t forbidden_count
+) {
+    float *prev_score = score_b, *cur_score = score_a;
+    size_t *prev_list = list_b, *cur_list = list_a;
+    size_t prev_count = 0, cur_count = 0;
+    float row_max = 0.0f;
+    size_t cells = 0;
+
+    // Before the first matched character, a non-dot may not skip a forbidden
+    // dot. A leading query dot may search across hidden components for the dot
+    // that produces the best complete alignment.
+    size_t row_end = rightmost_match[0];
+    char needle_0 = needle[0];
+    if (needle_0 != '.' && forbidden[0] < row_end) {
+        row_end = forbidden[0];
+    }
+    for (size_t j = 0; j <= row_end; j++) {
+        char d = haystack[j];
+        char compared = ignore_case ? downcase(d) : d;
+        if (compared != needle_0) {
+            continue;
+        }
+        if (++cells > SCORE_CELL_CAP) {
+            goto capped;
+        }
+        float score = base * factor_for(haystack, j, 0);
+        cur_score[j] = score;
+        cur_list[cur_count++] = j;
+        if (score > row_max) {
+            row_max = score;
+        }
+    }
+    if (cur_count == 0) {
+        return 0.0f;
+    }
+    if (threshold > 0.0f && needle_length > 1) {
+        float bound =
+            row_max + BONUS_CONSECUTIVE * base * (float)(needle_length - 1);
+        if (bound * (1.0f + 1.0e-4f) < threshold) {
+            return row_max;
+        }
+    }
+
+    for (size_t i = 1; i < needle_length; i++) {
+        prev_count = cur_count;
+        float *score_swap = prev_score;
+        prev_score = cur_score;
+        cur_score = score_swap;
+        size_t *list_swap = prev_list;
+        prev_list = cur_list;
+        cur_list = list_swap;
+        cur_count = 0;
+
+        char needle_i = needle[i];
+        size_t segment_start = 0;
+        size_t pk = 0;
+        // A query dot may keep searching across hidden components and match a
+        // later dot, so only non-dot rows enforce segment boundaries.
+        size_t forbidden_index = needle_i == '.' ? forbidden_count : 0;
+        float prefix_max = 0.0f;
+        bool have_prefix = false;
+        row_max = 0.0f;
+
+        size_t first_j = prev_list[0] + 1;
+        for (size_t j = first_j; j <= rightmost_match[i]; j++) {
+            // A forbidden dot at `j` can be matched. It constrains transitions
+            // only after the scan advances beyond it.
+            while (forbidden_index < forbidden_count &&
+                   forbidden[forbidden_index] < j) {
+                size_t minimum = forbidden[forbidden_index++];
+                while (segment_start < prev_count &&
+                       prev_list[segment_start] < minimum) {
+                    segment_start++;
+                }
+                pk = segment_start;
+                prefix_max = 0.0f;
+                have_prefix = false;
+            }
+
+            char d = haystack[j];
+            char compared = ignore_case ? downcase(d) : d;
+            if (compared != needle_i) {
+                continue;
+            }
+            if (++cells > SCORE_CELL_CAP) {
+                goto capped;
+            }
+
+            while (pk < prev_count && prev_list[pk] + 2 <= j) {
+                float score = prev_score[prev_list[pk]];
+                if (!have_prefix || score > prefix_max) {
+                    prefix_max = score;
+                    have_prefix = true;
+                }
+                pk++;
+            }
+
+            float best = 0.0f;
+            if (pk < prev_count && prev_list[pk] == j - 1) {
+                best = prev_score[j - 1] + base * BONUS_CONSECUTIVE;
+            }
+
+            if (have_prefix) {
+                float factor = boundary_factor(haystack, j);
+                if (factor >= 0.0f) {
+                    float candidate = base * factor + prefix_max;
+                    if (candidate > best) {
+                        best = candidate;
+                    }
+                } else {
+                    float k = base * 0.75f;
+                    for (size_t t = pk; t-- > segment_start;) {
+                        if (++cells > SCORE_CELL_CAP) {
+                            goto capped;
+                        }
+                        size_t p = prev_list[t];
+                        float gap_term = k / (float)(j - p);
+                        if (prefix_max + gap_term <= best) {
+                            break;
+                        }
+                        float candidate = prev_score[p] + gap_term;
+                        if (candidate > best) {
+                            best = candidate;
+                        }
+                    }
+                }
+            }
+
+            if (best > 0.0f) {
+                cur_score[j] = best;
+                cur_list[cur_count++] = j;
+                if (best > row_max) {
+                    row_max = best;
+                }
+            }
+        }
+
+        if (cur_count == 0) {
+            return 0.0f;
+        }
+        if (threshold > 0.0f && i < needle_length - 1) {
+            float remaining = (float)(needle_length - 1 - i);
+            float bound = row_max + BONUS_CONSECUTIVE * base * remaining;
+            if (bound * (1.0f + 1.0e-4f) < threshold) {
+                return row_max;
+            }
+        }
+    }
+
+    return row_max;
+
+capped:
+    return score_with_dots_fallback(
+        haystack, limit, needle, needle_length, base, ignore_case
+    );
+}
+
 float commandt_score_upper_bound(size_t needle_length, size_t candidate_length) {
     if (needle_length == 0 || candidate_length == 0) {
         return 1.0f;
@@ -299,7 +606,7 @@ float commandt_score(
     float base = (1.0f / haystack_len + 1.0f / needle_length) / 2.0f;
 
     // Per-candidate scratch, all sized by `limit`: the two DP score rows, the two
-    // reachable-position lists, and the forbidden-dot prefix sums. `limit` is
+    // reachable-position lists, and the forbidden-dot position list. `limit` is
     // bounded by the candidate's length, so for ordinary paths these fit on the
     // stack, but a pathologically long candidate (eg. a minified buffer line)
     // would overflow a worker thread's small stack; past `SCORE_SCRATCH_STACK`
@@ -308,24 +615,24 @@ float commandt_score(
     // freed.)
     float stack_score[2 * SCORE_SCRATCH_STACK];
     size_t stack_list[2 * SCORE_SCRATCH_STACK];
-    size_t stack_forbidden[SCORE_SCRATCH_STACK + 1];
+    size_t stack_forbidden[SCORE_SCRATCH_STACK];
     float *score_a, *score_b;
-    size_t *list_a, *list_b, *forbidden_prefix;
+    size_t *list_a, *list_b, *forbidden_positions;
     void *scratch_heap = NULL;
     if (limit <= SCORE_SCRATCH_STACK) {
         score_a = stack_score;
         score_b = stack_score + limit;
         list_a = stack_list;
         list_b = stack_list + limit;
-        forbidden_prefix = stack_forbidden;
+        forbidden_positions = stack_forbidden;
     } else {
         scratch_heap =
-            xmalloc(2 * limit * sizeof(float) + (3 * limit + 1) * sizeof(size_t));
+            xmalloc(2 * limit * sizeof(float) + 3 * limit * sizeof(size_t));
         score_a = (float *)scratch_heap;
         score_b = score_a + limit;
         list_a = (size_t *)(score_b + limit);
         list_b = list_a + limit;
-        forbidden_prefix = list_b + limit;
+        forbidden_positions = list_b + limit;
     }
     float result = 0.0f;
 
@@ -336,15 +643,15 @@ float commandt_score(
     // - `always_show_dot_files`: no constraint.
     // - `never_show_dot_files`: any forbidden dot in range excludes the
     //   candidate outright.
-    // - default: a forbidden dot must be matched *explicitly* by a "." in the
-    //   needle (ie. no match may "skip over" it). This is enforced in the DP by
-    //   forbidding transitions whose skipped span contains a forbidden dot.
+    // - default: crossing a forbidden dot requires the current needle character
+    //   to be a dot. That query dot may keep searching across any number of
+    //   hidden components and match a later dot; after it is consumed, another
+    //   component requires another query dot.
     //
     // The cached `first_dot` makes the common case (no hidden component in the
-    // matchable range) O(1): only when a forbidden dot actually falls in
-    // `[0, limit)` do we pay to build the prefix sums used by the enforcement
-    // path below.
-    bool enforce_dots = false;
+    // matchable range) O(1). When a forbidden dot does fall in `[0, limit)`,
+    // gather the forbidden positions and route to the separate dot-aware DP,
+    // keeping the common scorer free of hidden-dot checks.
     ssize_t first_dot =
         always_show_dot_files ? -1 : forbidden_dot_index(haystack);
     if (first_dot >= 0 && (size_t)first_dot < limit) {
@@ -352,15 +659,29 @@ float commandt_score(
             result = 0.0f;
             goto done;
         }
-        size_t forbidden_total = 0;
-        forbidden_prefix[0] = 0;
-        for (size_t k = 0; k < limit; k++) {
+        size_t forbidden_count = 0;
+        for (size_t k = (size_t)first_dot; k < limit; k++) {
             if (haystack_p[k] == '.' && (k == 0 || haystack_p[k - 1] == '/')) {
-                forbidden_total++;
+                forbidden_positions[forbidden_count++] = k;
             }
-            forbidden_prefix[k + 1] = forbidden_total;
         }
-        enforce_dots = true;
+        result = score_with_dots(
+            haystack_p,
+            needle_p,
+            needle_length,
+            rightmost_match_p,
+            limit,
+            base,
+            ignore_case,
+            threshold,
+            score_a,
+            score_b,
+            list_a,
+            list_b,
+            forbidden_positions,
+            forbidden_count
+        );
+        goto done;
     }
 
     // Forward dynamic program. `D[i][j]` is the best score for matching
@@ -387,9 +708,7 @@ float commandt_score(
     float row_max = 0.0f;
 
     // Running count of matched positions processed; past `SCORE_CELL_CAP` we bail
-    // to the greedy fallback (unless the dot gate is engaged, which the greedy
-    // pass does not model, but which never coincides with degenerate input in
-    // practice). See `SCORE_CELL_CAP`.
+    // to the greedy fallback. See `SCORE_CELL_CAP`.
     size_t cells = 0;
 
     // Row 0: place needle[0] at each matching position.
@@ -400,11 +719,7 @@ float commandt_score(
         if (d_cmp != needle_0) {
             continue;
         }
-        // The span before the first match must not skip a forbidden dot.
-        if (enforce_dots && forbidden_prefix[j] > 0) {
-            continue;
-        }
-        if (++cells > SCORE_CELL_CAP && !enforce_dots) {
+        if (++cells > SCORE_CELL_CAP) {
             goto capped;
         }
         float c = base * factor_for(haystack_p, j, 0);
@@ -460,38 +775,8 @@ float commandt_score(
             if (d_cmp != needle_i) {
                 continue;
             }
-            if (++cells > SCORE_CELL_CAP && !enforce_dots) {
+            if (++cells > SCORE_CELL_CAP) {
                 goto capped;
-            }
-
-            if (enforce_dots) {
-                // Rare path: a forbidden dot is present, so predecessors are
-                // only valid when the span they skip contains none. Fall back to
-                // a straightforward scan.
-                float best = 0.0f;
-                for (size_t t = 0; t < prev_count; t++) {
-                    size_t p = prev_list[t];
-                    if (p >= j) {
-                        break;
-                    }
-                    if (forbidden_prefix[j] - forbidden_prefix[p + 1] > 0) {
-                        continue;
-                    }
-                    float q = j == p + 1 ? BONUS_CONSECUTIVE
-                                         : factor_for(haystack_p, j, p);
-                    float total = prev_score[p] + base * q;
-                    if (total > best) {
-                        best = total;
-                    }
-                }
-                if (best > 0.0f) {
-                    cur_score[j] = best;
-                    cur_list[cur_count++] = j;
-                    if (best > row_max) {
-                        row_max = best;
-                    }
-                }
-                continue;
             }
 
             // Fast path. Fold every eligible non-consecutive predecessor

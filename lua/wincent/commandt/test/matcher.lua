@@ -383,6 +383,44 @@ describe('matcher.c', function()
       expect(matcher.match('t.sst')).to_equal({ 'this/.secret/stuff.txt' })
     end)
 
+    it('allows one query dot to search across nested hidden components', function()
+      local candidate = 'a/.b/.c/z'
+      local matcher = get_matcher({ candidate })
+      expect(matcher.match('z')).to_equal({})
+      expect(matcher.match('.z')).to_equal({ candidate })
+      expect(matcher.match('a.z')).to_equal({ candidate })
+    end)
+
+    it('requires another query dot after matching intervening text', function()
+      local candidate = 'a/.b/x/.c/z'
+      local matcher = get_matcher({ candidate })
+      expect(matcher.match('.xz')).to_equal({})
+      expect(matcher.match('.x.z')).to_equal({ candidate })
+    end)
+
+    it('can choose a hidden dot instead of an earlier ordinary dot', function()
+      local candidate = 'a.b/.c'
+      local matcher = get_matcher({ candidate })
+      expect(matcher.match('.c')).to_equal({ candidate })
+    end)
+
+    it('preserves hidden-dot matching when capped', function()
+      local one_hidden = 'a.b/.' .. string.rep('c', 20000)
+      local matcher = get_matcher({ one_hidden })
+      expect(matcher.match('.cc')).to_equal({ one_hidden })
+
+      -- Exercise the fallback across a 64-bit bitset word boundary.
+      matcher = get_matcher({ one_hidden })
+      expect(matcher.match('.' .. string.rep('c', 64))).to_equal({ one_hidden })
+
+      local two_hidden = 'a.b/.c/.' .. string.rep('d', 20000)
+      matcher = get_matcher({ two_hidden })
+      expect(matcher.match('..dd')).to_equal({ two_hidden })
+
+      matcher = get_matcher({ two_hidden })
+      expect(matcher.match('.dd')).to_equal({ two_hidden })
+    end)
+
     it("doesn't show a dotfile just because there was a match at index 0", function()
       pending('fix: see ed01bc6') -- Bug exists in Ruby implementation as well.
       local matcher = get_matcher({ 'src/.flowconfig' })
